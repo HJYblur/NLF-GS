@@ -2,7 +2,7 @@ import os
 import torch
 from gsplat import rasterization
 from avatar_utils.config import get_config
-from avatar_utils.camera import load_camera_mapping
+from avatar_utils.camera import load_camera_mapping, look_at_viewmatrix, bbox_and_4_viewmats
 from typing import Sequence, Union
 from avatar_utils.config import get_config
 
@@ -55,22 +55,62 @@ class GsplatRenderer:
         else:
             backgrounds = backgrounds.to(gaussian_3d.device)
             
-        colors = torch.rand((N, 3), device='cuda')
+        # colors = torch.rand((N, 3), device='cuda')
         
-        width, height = 300, 200
-        viewmats = torch.eye(4, device='cuda')[None, :, :]
-        viewmats[:, 0, 3] = -5
-        viewmats = viewmats.expand(len(view_name) if isinstance(view_name, Sequence) else 1, -1, -1)
-        Ks = torch.tensor([
-           [300., 0., 150.], [0., 300., 100.], [0., 0., 1.]], device='cuda')[None, :, :]
-        Ks = Ks.expand(len(view_name) if isinstance(view_name, Sequence) else 1, -1, -1)
-            
+        # width, height = 1024, 1024
+        # viewmats = torch.eye(4, device='cuda')[None, :, :]
+        # viewmats = viewmats.expand(len(view_name) if isinstance(view_name, Sequence) else 1, -1, -1)
+        
+        # w2c1, c2w = look_at_viewmatrix(
+        #     eye=(0, 0, 3000),
+        #     target=(0, 0, 0),
+        #     forward="+z",   # try "+z" if your renderer expects that
+        #     device="cuda"
+        # )
+        # viewmats1 = w2c1.unsqueeze(0)  # (1,4,4)
+        # w2c2, _ = look_at_viewmatrix(
+        #     eye=(3000, 0, 0),
+        #     target=(0, 0, 0),
+        #     forward="+z",
+        #     device="cuda"
+        # )
+        # viewmats2 = w2c2.unsqueeze(0)
+        # w2c3, _ = look_at_viewmatrix(
+        #     eye=(0, 3000, 0),
+        #     target=(0, 0, 0),
+        #     forward="+z",
+        #     device="cuda"
+        # )
+        # viewmats3 = w2c3.unsqueeze(0)
+        # w2c4, _ = look_at_viewmatrix(
+        #     eye=(-3000, 0, 0),
+        #     target=(0, 0, 0),
+        #     forward="+z",
+        #     device="cuda"
+        # )
+        # viewmats4 = w2c4.unsqueeze(0)
+        # viewmats = torch.cat([viewmats1, viewmats2, viewmats3, viewmats4], dim=0)  # (4,4,4)
+        
+        # viewmats_dict, eyes_dict, bbox = bbox_and_4_viewmats(gaussian_3d, forward="+z")
+
+        # # stack in any order you want:
+        # order = ["front", "back", "left", "right"]
+        # viewmats = torch.stack([viewmats_dict[k] for k in order], dim=0)  # (4,4,4)
+
+        # Ks = torch.tensor([
+        #    [512., 0., 256.], [0., 512., 175.], [0., 0., 1.]], device='cuda')[None, :, :]
+        # Ks = Ks.expand(len(view_name) if isinstance(view_name, Sequence) else 1, -1, -1)
+        
+        # print min max values of gaussian_3d
+        print(f"Gaussian 3D centers min: {gaussian_3d.min(dim=0).values}")
+        print(f"Gaussian 3D centers max: {gaussian_3d.max(dim=0).values}")
+
         rendered_imgs, rendered_alphas, meta = rasterization(
             means=gaussian_3d,
             quats=gaussian_params["rotation"],
             scales=gaussian_params["scales"],
             opacities=gaussian_params["alpha"],
-            # sh_degree=self.sh_degree,
+            sh_degree=self.sh_degree,
             colors=colors,  # (N, K), usually K = 3
             viewmats=viewmats,
             Ks=Ks,

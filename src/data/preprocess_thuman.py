@@ -168,6 +168,10 @@ def _render_views(
         m_scaled = m.copy()
         m_scaled.apply_scale(MESH_SCALE)
         scaled_meshes.append(m_scaled)
+        
+    # print min and max location of all scaled meshes for debugging
+    all_vertices = np.vstack([m.vertices for m in scaled_meshes])
+    print(f"Scaled meshes vertex bounds: min {all_vertices.min(axis=0)}, max{all_vertices.max(axis=0)}")
     
     # Build scene with scaled meshes
     scene = pyrender.Scene(bg_color=[255, 255, 255, 0], ambient_light=[0.3, 0.3, 0.3])
@@ -192,12 +196,26 @@ def _render_views(
             
             eye = origin + direction * distance
             c2w = look_at(eye, origin, up)
+            # pyrender follows an OpenGL-style camera convention (camera looks along -Z).
+            # For gsplat we want a world-to-camera matrix. We save w2c (= inv(c2w)).
+            # In this project we treat the saved viewmat as "+Z forward" when consumed
+            # by gsplat.
+            w2c = np.linalg.inv(c2w)
             cam_node = scene.add(camera, pose=c2w)
             light_node = scene.add(light, pose=c2w)
 
             color, depth = renderer.render(scene)
             # Save color image with identity + view in the filename
             Image.fromarray(color).save(out_dir / f"{identity}_{name}.png")
+
+            # Save the per-view world-to-camera matrix for gsplat (alongside images)
+            cam_payload = {
+                "viewmat": w2c.tolist(),
+                "type": "w2c",
+                "coords": "+z",
+            }
+            with open(out_dir / f"{identity}_{name}_w2c.json", "w", encoding="utf-8") as f:
+                json.dump(cam_payload, f, ensure_ascii=False, indent=2)
 
             # Generate a foreground mask from depth (valid, >0)
             if depth is not None:
