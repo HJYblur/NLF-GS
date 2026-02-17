@@ -83,16 +83,16 @@ def camera_mapping(view_name: str) -> tuple[torch.Tensor, torch.Tensor]:
         viewmats: Tensor of shape (B, 4, 4) representing the batched camera extrinsic matrix.
         Ks: Tensor of shape (B, 3, 3) representing the batched camera intrinsic matrix.
     """
-    # Match preprocess_thuman.py: Perspective camera with yfov=45 degrees and
-    # camera pose built via look_at(center + direction * distance, center, up).
-    # We assume a canonical scene with center at origin and a fixed distance
-    # (since radius is unknown at render time here). This yields consistent
-    # camera placement for each named view.
-
+    # Get camera configuration from config
+    cfg = get_config()
+    camera_cfg = cfg.get("camera", {})
+    
     # Image size used to derive intrinsics (principal point & focal length)
-    width, height = get_config().get("data", {}).get("image_size", (1024, 1024))
+    width, height = cfg.get("data", {}).get("image_size", (1024, 1024))
     W, H = int(width), int(height)
-    yfov_deg = 45.0
+    
+    # Camera parameters from config
+    yfov_deg = float(camera_cfg.get("yfov_deg", 45.0))
     yfov_rad = torch.tensor(yfov_deg * 3.141592653589793 / 180.0, dtype=torch.float32)
     # Focal length from vertical FOV: fy = H / (2 * tan(yfov/2)); fx = fy (square pixels)
     fy = H / (2.0 * torch.tan(yfov_rad / 2.0))
@@ -107,34 +107,39 @@ def camera_mapping(view_name: str) -> tuple[torch.Tensor, torch.Tensor]:
         0
     )  # (1,3,3)
 
-    # Map view name to direction vector (same as VIEWPOINTS in preprocess)
+    # Map view name to direction vector from config
+    viewpoints_cfg = camera_cfg.get("viewpoints", {
+        "front": [0.0, 0.0, 1.0],
+        "back": [0.0, 0.0, -1.0],
+        "left": [-1.0, 0.0, 0.0],
+        "right": [1.0, 0.0, 0.0],
+    })
     directions = {
-        "front": torch.tensor([0.0, 0.0, 1.0], dtype=torch.float32),
-        "back": torch.tensor([0.0, 0.0, -1.0], dtype=torch.float32),
-        "left": torch.tensor([-1.0, 0.0, 0.0], dtype=torch.float32),
-        "right": torch.tensor([1.0, 0.0, 0.0], dtype=torch.float32),
+        k: torch.tensor(v, dtype=torch.float32) 
+        for k, v in viewpoints_cfg.items()
     }
     if view_name not in directions:
         raise ValueError(f"Unsupported view_name: {view_name}")
 
     center = torch.zeros(3, dtype=torch.float32)
     direction = directions[view_name]
-    # Use a canonical distance matching preprocess_thuman's pattern (radius * 2.5).
-    # Without radius, pick distance=2.5.
-    distance = 2.5
+    # Use canonical distance from config
+    distance = float(camera_cfg.get("distance", 1.2))
     eye = center + direction * distance
 
-    up = torch.tensor([0.0, 1.0, 0.0], dtype=torch.float32)
+    # Get up vector from config
+    up_vec = camera_cfg.get("up", [0.0, 1.0, 0.0])
+    up = torch.tensor(up_vec, dtype=torch.float32)
     # If up is parallel to direction, use Z-up
-    if torch.allclose(torch.cross(up, direction), torch.zeros(3, dtype=torch.float32)):
+    if torch.allclose(torch.linalg.cross(up, direction), torch.zeros(3, dtype=torch.float32)):
         up = torch.tensor([0.0, 0.0, 1.0], dtype=torch.float32)
 
     # Build camera-to-world pose (match look_at in preprocess)
     z = eye - center
     z = z / (torch.norm(z) + 1e-8)
-    x = torch.cross(up, z)
+    x = torch.linalg.cross(up, z)
     x = x / (torch.norm(x) + 1e-8)
-    y = torch.cross(z, x)
+    y = torch.linalg.cross(z, x)
 
     c2w = torch.eye(4, dtype=torch.float32)
     c2w[:3, 0] = x
@@ -204,18 +209,18 @@ def look_at_viewmatrix(
     f = f / (torch.norm(f) + 1e-8)
 
     # Handle degenerate up (parallel to forward)
-    if torch.norm(torch.cross(f, up)) < 1e-6:
+    if torch.norm(torch.linalg.cross(f, up)) < 1e-6:
         # pick an alternate up that's not parallel
         up = torch.tensor([0.0, 0.0, 1.0], dtype=dtype, device=device)
-        if torch.norm(torch.cross(f, up)) < 1e-6:
+        if torch.norm(torch.linalg.cross(f, up)) < 1e-6:
             up = torch.tensor([1.0, 0.0, 0.0], dtype=dtype, device=device)
 
     # Build an orthonormal basis
     # right
-    r = torch.cross(f, up)
+    r = torch.linalg.cross(f, up)
     r = r / (torch.norm(r) + 1e-8)
     # true up
-    u = torch.cross(r, f)
+    u = torch.linalg.cross(r, f)
 
     # Camera's +Z axis in world space depends on convention
     if forward == "-z":
