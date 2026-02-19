@@ -1,71 +1,75 @@
 import os
+import sys
+from pathlib import Path
 
-# Headless Linux often lacks an X11 display; force an offscreen GL backend early
-# before importing pyrender so it can pick a headless platform (EGL/OSMesa).
-if not os.environ.get("DISPLAY") and "PYOPENGL_PLATFORM" not in os.environ:
-    # Prefer EGL on GPU servers; if unavailable, users can switch to 'osmesa'
-    os.environ["PYOPENGL_PLATFORM"] = "egl"
+# Make 'avatar_utils' importable when running as a script
+# Add the 'src' directory to sys.path so imports like 'from avatar_utils.x import y' work
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
 
 import json
-from pathlib import Path
 import numpy as np
+import torch
 import trimesh
 import pyrender
 from PIL import Image
+from avatar_utils.camera import look_at_viewmatrix
+from avatar_utils.config import get_config
+
+import os, sys
+
+def configure_pyopengl_platform(prefer_gpu=True):
+    # Don't override user choice
+    if "PYOPENGL_PLATFORM" in os.environ:
+        return
+
+    is_macos = (sys.platform == "darwin")
+    is_linux = sys.platform.startswith("linux")
+    is_headless = (not os.environ.get("DISPLAY")) and (not os.environ.get("WAYLAND_DISPLAY"))
+
+    if is_macos:
+        return
+
+    if is_linux and is_headless:
+        # Linux headless: prefer EGL for GPU offscreen; fallback to OSMesa (CPU)
+        if prefer_gpu:
+            os.environ["PYOPENGL_PLATFORM"] = "egl"
+        else:
+            os.environ["PYOPENGL_PLATFORM"] = "osmesa"
+        return
+
+    # Linux/others with a display: don't force anything (GLX/WGL/whatever works)
+    # If you *must* force on Linux desktop, use "glx", but usually best to do nothing.
 
 
-def look_at(eye: np.ndarray, target: np.ndarray, up: np.ndarray) -> np.ndarray:
-    """Create a 4x4 camera-to-world pose matrix.
+configure_pyopengl_platform()
 
-    This matches the common OpenGL/pyrender convention where the camera looks
-    towards the negative Z axis. The returned matrix places the camera at
-    `eye` and orients it to look at `target` with the given `up` vector.
+# Load camera configuration from YAML
+def get_camera_config():
+    """Get camera configuration from YAML config file."""
+    cfg = get_config()
+    camera_cfg = cfg.get("camera", {})
+    data_cfg = cfg.get("data", {})
+    
+    return {
+        "distance": float(camera_cfg.get("distance", 1.2)),
+        "yfov_deg": float(camera_cfg.get("yfov_deg", 45.0)),
+        "up": camera_cfg.get("up", [0.0, 1.0, 0.0]),
+        "viewpoints": camera_cfg.get("viewpoints", {
+            "front": [0.0, 0.0, 1.0],
+            "back": [0.0, 0.0, -1.0],
+            "left": [-1.0, 0.0, 0.0],
+            "right": [1.0, 0.0, 0.0],
+        }),
+        "image_size": tuple(data_cfg.get("image_size", [1024, 1024])),
+    }
 
-    Args:
-        eye: (3,) camera position in world coordinates.
-        target: (3,) point the camera looks at.
-        up: (3,) up direction for the camera.
-
-    Returns:
-        (4,4) homogeneous transformation matrix (camera -> world).
-    """
-    eye = np.asarray(eye, dtype=float)
-    target = np.asarray(target, dtype=float)
-    up = np.asarray(up, dtype=float)
-
-    # forward vector (camera's local Z) points from target to eye
-    z = eye - target
-    z = z / np.linalg.norm(z)
-
-    # right vector (camera's local X)
-    x = np.cross(up, z)
-    if np.linalg.norm(x) < 1e-8:
-        # up was parallel to viewing direction; pick a different up
-        up_alt = np.array([0.0, 0.0, 1.0])
-        x = np.cross(up_alt, z)
-    x = x / np.linalg.norm(x)
-
-    # true up (camera's local Y)
-    y = np.cross(z, x)
-
-    mat = np.eye(4, dtype=float)
-    mat[:3, 0] = x
-    mat[:3, 1] = y
-    mat[:3, 2] = z
-    mat[:3, 3] = eye
-    return mat
-
-
+# Global constants from config
+CAMERA_CONFIG = get_camera_config()
 DATA_ROOT = Path(__file__).resolve().parents[2] / "data" / "THuman_2.0"
 OUT_ROOT = Path(__file__).resolve().parents[2] / "processed"
-IMAGE_SIZE = (1024, 1024)
-MESH_SCALE = 1.5
-VIEWPOINTS = {
-    "front": np.array([0.0, 0.0, 1.0]),
-    "back": np.array([0.0, 0.0, -1.0]),
-    "left": np.array([-1.0, 0.0, 0.0]),
-    "right": np.array([1.0, 0.0, 0.0]),
-}
+IMAGE_SIZE = CAMERA_CONFIG["image_size"]
+VIEWPOINTS = {k: np.array(v) for k, v in CAMERA_CONFIG["viewpoints"].items()}
 CAMERA_MAP_ROOT = Path(__file__).resolve().parents[2] / "data" / "THuman_cameras"
 
 
@@ -155,34 +159,39 @@ def _render_views(
     out_dir: Path,
     texture_path: Path | None,
     identity: str,
+    bg_color: list[int] | tuple[int, int, int] = (255, 255, 255),
 ):
     """Render THuman meshes from canonical camera positions.
     
-    Scale meshes to match SMPL-X size and render from fixed camera positions
-    to ensure consistency with training data.
     """
-    # Scale meshes to reasonable size for rendering
-    # THuman scans are physically small (~0.6-0.9m), scale them up for better framing
-    scaled_meshes = []
+    # print min and max location of all meshes for debugging
+    all_vertices = np.vstack([m.vertices for m in meshes])
+    print(
+        f"Meshes vertex bounds: min {all_vertices.min(axis=0)}, max {all_vertices.max(axis=0)}"
+    )
+
+    # Build scene
+    bg_rgb = list(bg_color)
+    if len(bg_rgb) != 3:
+        raise ValueError(f"bg_color must be RGB (len=3), got: {bg_color}")
+    scene = pyrender.Scene(bg_color=[bg_rgb[0], bg_rgb[1], bg_rgb[2], 0], ambient_light=[0.3, 0.3, 0.3])
     for m in meshes:
-        m_scaled = m.copy()
-        m_scaled.apply_scale(MESH_SCALE)
-        scaled_meshes.append(m_scaled)
-    
-    # Build scene with scaled meshes
-    scene = pyrender.Scene(bg_color=[255, 255, 255, 0], ambient_light=[0.3, 0.3, 0.3])
-    for m in scaled_meshes:
         scene.add(_mesh_to_pyrender(m, texture_path))
 
     # Canonical global cameras: look at origin with fixed distance
-    camera = pyrender.PerspectiveCamera(yfov=np.deg2rad(45.0))
+    yfov_deg = CAMERA_CONFIG["yfov_deg"]
+    camera = pyrender.PerspectiveCamera(yfov=np.deg2rad(yfov_deg))
     light = pyrender.DirectionalLight(color=np.ones(3), intensity=3.0)
+
+    # Camera intrinsics/extrinsics are generated once globally by generate_camera_mapping()
+    # and consumed by gsplat via avatar_utils.camera.load_camera_mapping().
+    # We intentionally do NOT write per-identity camera JSONs here to avoid duplication.
 
     renderer = pyrender.OffscreenRenderer(*IMAGE_SIZE)
     try:
         origin = np.zeros(3, dtype=float)
-        up_default = np.array([0.0, 1.0, 0.0], dtype=float)
-        distance = 2.0  # Closer camera for better framing
+        up_default = np.array(CAMERA_CONFIG["up"], dtype=float)
+        distance = CAMERA_CONFIG["distance"]
         
         for name, direction in VIEWPOINTS.items():
             # Ensure up is not parallel to view direction
@@ -190,10 +199,26 @@ def _render_views(
             if np.allclose(np.cross(up, direction), 0.0):
                 up = np.array([0.0, 0.0, 1.0], dtype=float)
             
+            # --- Camera conventions ---
+            # pyrender (OpenGL-style) uses a camera that looks along -Z in camera space.
+            # gsplat uses +Z forward.
+            # We'll:
+            #   (1) build a pyrender camera pose using forward='-z'
+            #   (2) save a gsplat-compatible w2c using forward='+z'
             eye = origin + direction * distance
-            c2w = look_at(eye, origin, up)
-            cam_node = scene.add(camera, pose=c2w)
-            light_node = scene.add(light, pose=c2w)
+
+            # Build pyrender camera-to-world pose (-Z forward)
+            _w2c_pyr_t, c2w_pyr_t = look_at_viewmatrix(
+                eye=eye,
+                target=origin,
+                up=up,
+                device=None,
+                dtype=torch.float32,
+                forward="-z",
+            )
+            c2w_pyr = c2w_pyr_t.detach().cpu().numpy().astype(float)
+            cam_node = scene.add(camera, pose=c2w_pyr)
+            light_node = scene.add(light, pose=c2w_pyr)
 
             color, depth = renderer.render(scene)
             # Save color image with identity + view in the filename
@@ -213,9 +238,9 @@ def _render_views(
 
 def generate_camera_mapping(
     output_dir: Path | None = None,
-    image_size: tuple[int, int] = IMAGE_SIZE,
-    yfov_deg: float = 45.0,
-    distance: float = 2.0,  # Changed to 2.0 to match rendering
+    image_size: tuple[int, int] | None = None,
+    yfov_deg: float | None = None,
+    distance: float | None = None,
 ) -> None:
     """Generate and store camera intrinsics & extrinsics for THuman views.
 
@@ -228,10 +253,18 @@ def generate_camera_mapping(
 
     Args:
         output_dir: Destination directory (default: project-root/.data).
-        image_size: (W, H) used to derive principal point and focal length.
-        yfov_deg: Vertical field of view in degrees.
-        distance: Canonical camera distance from origin for all views.
+        image_size: (W, H) used to derive principal point and focal length. If None, read from config.
+        yfov_deg: Vertical field of view in degrees. If None, read from config.
+        distance: Canonical camera distance from origin for all views. If None, read from config.
     """
+    # Use config values if not provided
+    if image_size is None:
+        image_size = CAMERA_CONFIG["image_size"]
+    if yfov_deg is None:
+        yfov_deg = CAMERA_CONFIG["yfov_deg"]
+    if distance is None:
+        distance = CAMERA_CONFIG["distance"]
+    
     if output_dir is None:
         output_dir = CAMERA_MAP_ROOT
     os.makedirs(output_dir, exist_ok=True)
@@ -246,7 +279,7 @@ def generate_camera_mapping(
     K = np.array([[fx, 0.0, cx], [0.0, fy, cy], [0.0, 0.0, 1.0]], dtype=float)
 
     center = np.zeros(3, dtype=float)
-    up_world = np.array([0.0, 1.0, 0.0], dtype=float)
+    up_world = np.array(CAMERA_CONFIG["up"], dtype=float)
 
     for view_name, direction in VIEWPOINTS.items():
         eye = center + direction * distance
@@ -254,12 +287,34 @@ def generate_camera_mapping(
         if np.allclose(np.cross(up, direction), 0.0):
             up = np.array([0.0, 0.0, 1.0], dtype=float)
 
-        c2w = look_at(eye, center, up)
-        w2c = np.linalg.inv(c2w)
+        # Save gsplat-compatible world-to-camera (+Z forward)
+        w2c_gs_t, _c2w_gs_t = look_at_viewmatrix(
+            eye=eye,
+            target=center,
+            up=up,
+            device=None,
+            dtype=torch.float32,
+            forward="+z",
+        )
+        w2c = w2c_gs_t.detach().cpu().numpy().astype(float)
+
+        # Also keep the pyrender (-Z forward) camera-to-world pose for debugging/reference
+        _w2c_pyr_t, c2w_pyr_t = look_at_viewmatrix(
+            eye=eye,
+            target=center,
+            up=up,
+            device=None,
+            dtype=torch.float32,
+            forward="-z",
+        )
+        c2w_pyr = c2w_pyr_t.detach().cpu().numpy().astype(float)
 
         payload = {
             "K": K.tolist(),
             "viewmat": w2c.tolist(),
+            "coords": "+z",
+            "type": "w2c",
+            "c2w_pyrender": c2w_pyr.tolist(),
             "image_size": [int(W), int(H)],
             "yfov_deg": float(yfov_deg),
         }
@@ -275,8 +330,9 @@ def preprocess_thuman(data_root: Path = DATA_ROOT, out_root: Path = OUT_ROOT):
     try:
         generate_camera_mapping(output_dir=CAMERA_MAP_ROOT)
     except Exception:
-        # Non-fatal; continue preprocessing even if mapping generation fails
-        pass
+        raise RuntimeError(
+            f"Failed to generate camera mapping. Ensure that pyrender and its dependencies are properly installed and that a compatible OpenGL context is available. You may try setting PYOPENGL_PLATFORM=egl or PYOPENGL_PLATFORM=osmesa in your environment variables. Original error: {e}"
+        )
     for identity, obj_path in _iter_identities(data_root):
         target_dir = out_root / identity
         target_dir.mkdir(parents=True, exist_ok=True)

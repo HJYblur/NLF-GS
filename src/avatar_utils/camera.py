@@ -2,7 +2,7 @@ import os
 import json
 import trimesh
 import torch
-from typing import List, Optional, Sequence, Union
+from typing import List, Optional, Sequence, Union, Dict, Tuple
 from avatar_utils.config import get_config
 
 
@@ -22,8 +22,6 @@ def load_camera_mapping(
     project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
     cache_dir = os.path.join(project_root, "data", "THuman_cameras")
     
-    # Define device
-    device = torch.device(get_config().get("sys", {}).get("device", "cpu"))
 
     def _load_one(vname: str) -> tuple[torch.Tensor, torch.Tensor]:
         cache_path = os.path.join(cache_dir, f"thuman_{vname}.json")
@@ -62,7 +60,7 @@ def load_camera_mapping(
 
     if isinstance(view_name, str):
         vm, k = _load_one(view_name)
-        return vm.unsqueeze(0).to(device), k.unsqueeze(0).to(device)
+        return vm.unsqueeze(0), k.unsqueeze(0)
     else:
         vms = []
         ks = []
@@ -70,7 +68,7 @@ def load_camera_mapping(
             vm, k = _load_one(str(v))
             vms.append(vm)
             ks.append(k)
-        return torch.stack(vms, dim=0).to(device), torch.stack(ks, dim=0).to(device)
+        return torch.stack(vms, dim=0), torch.stack(ks, dim=0)
 
 
 def camera_mapping(view_name: str) -> tuple[torch.Tensor, torch.Tensor]:
@@ -83,16 +81,16 @@ def camera_mapping(view_name: str) -> tuple[torch.Tensor, torch.Tensor]:
         viewmats: Tensor of shape (B, 4, 4) representing the batched camera extrinsic matrix.
         Ks: Tensor of shape (B, 3, 3) representing the batched camera intrinsic matrix.
     """
-    # Match preprocess_thuman.py: Perspective camera with yfov=45 degrees and
-    # camera pose built via look_at(center + direction * distance, center, up).
-    # We assume a canonical scene with center at origin and a fixed distance
-    # (since radius is unknown at render time here). This yields consistent
-    # camera placement for each named view.
-
+    # Get camera configuration from config
+    cfg = get_config()
+    camera_cfg = cfg.get("camera", {})
+    
     # Image size used to derive intrinsics (principal point & focal length)
-    width, height = get_config().get("data", {}).get("image_size", (1024, 1024))
+    width, height = cfg.get("data", {}).get("image_size", (1024, 1024))
     W, H = int(width), int(height)
-    yfov_deg = 45.0
+    
+    # Camera parameters from config
+    yfov_deg = float(camera_cfg.get("yfov_deg", 45.0))
     yfov_rad = torch.tensor(yfov_deg * 3.141592653589793 / 180.0, dtype=torch.float32)
     # Focal length from vertical FOV: fy = H / (2 * tan(yfov/2)); fx = fy (square pixels)
     fy = H / (2.0 * torch.tan(yfov_rad / 2.0))
@@ -107,34 +105,39 @@ def camera_mapping(view_name: str) -> tuple[torch.Tensor, torch.Tensor]:
         0
     )  # (1,3,3)
 
-    # Map view name to direction vector (same as VIEWPOINTS in preprocess)
+    # Map view name to direction vector from config
+    viewpoints_cfg = camera_cfg.get("viewpoints", {
+        "front": [0.0, 0.0, 1.0],
+        "back": [0.0, 0.0, -1.0],
+        "left": [-1.0, 0.0, 0.0],
+        "right": [1.0, 0.0, 0.0],
+    })
     directions = {
-        "front": torch.tensor([0.0, 0.0, 1.0], dtype=torch.float32),
-        "back": torch.tensor([0.0, 0.0, -1.0], dtype=torch.float32),
-        "left": torch.tensor([-1.0, 0.0, 0.0], dtype=torch.float32),
-        "right": torch.tensor([1.0, 0.0, 0.0], dtype=torch.float32),
+        k: torch.tensor(v, dtype=torch.float32) 
+        for k, v in viewpoints_cfg.items()
     }
     if view_name not in directions:
         raise ValueError(f"Unsupported view_name: {view_name}")
 
     center = torch.zeros(3, dtype=torch.float32)
     direction = directions[view_name]
-    # Use a canonical distance matching preprocess_thuman's pattern (radius * 2.5).
-    # Without radius, pick distance=2.5.
-    distance = 2.5
+    # Use canonical distance from config
+    distance = float(camera_cfg.get("distance", 1.2))
     eye = center + direction * distance
 
-    up = torch.tensor([0.0, 1.0, 0.0], dtype=torch.float32)
+    # Get up vector from config
+    up_vec = camera_cfg.get("up", [0.0, 1.0, 0.0])
+    up = torch.tensor(up_vec, dtype=torch.float32)
     # If up is parallel to direction, use Z-up
-    if torch.allclose(torch.cross(up, direction), torch.zeros(3, dtype=torch.float32)):
+    if torch.allclose(torch.linalg.cross(up, direction), torch.zeros(3, dtype=torch.float32)):
         up = torch.tensor([0.0, 0.0, 1.0], dtype=torch.float32)
 
     # Build camera-to-world pose (match look_at in preprocess)
     z = eye - center
     z = z / (torch.norm(z) + 1e-8)
-    x = torch.cross(up, z)
+    x = torch.linalg.cross(up, z)
     x = x / (torch.norm(x) + 1e-8)
-    y = torch.cross(z, x)
+    y = torch.linalg.cross(z, x)
 
     c2w = torch.eye(4, dtype=torch.float32)
     c2w[:3, 0] = x
@@ -178,3 +181,153 @@ def intrinsic_matrix_from_field_of_view(
         .unflatten(-1, (3, 3))
         .unsqueeze(0)
     )
+
+def look_at_viewmatrix(
+    eye,          # (3,) camera position in world: [x1,y1,z1]
+    target,       # (3,) point camera looks at:   [x2,y2,z2]
+    up=(0.0, 1.0, 0.0),
+    device=None,
+    dtype=torch.float32,
+    forward="-z",  # "-z" (OpenGL-style) or "+z" (some CV pipelines)
+):
+    """
+    Returns:
+      w2c: (4,4) world-to-camera view matrix
+      c2w: (4,4) camera-to-world (inverse pose)
+    Convention:
+      - If forward == "-z": OpenGL / graphics convention.
+            Camera axes: X-right, Y-up, Z-backward (camera looks along -Z).
+      - If forward == "+z": CV / gsplat convention.
+            Camera axes: X-right, Y-down, Z-forward (camera looks along +Z).
+            This is equivalent to flipping both Y and Z relative to the OpenGL
+            convention, which keeps the handedness and ensures that standard
+            pinhole projection  p = K @ [X,Y,Z]^T / Z  maps Y-down to
+            increasing pixel rows (top-to-bottom), matching the rendered images.
+    """
+    eye = torch.as_tensor(eye, dtype=dtype, device=device)
+    target = torch.as_tensor(target, dtype=dtype, device=device)
+    up = torch.as_tensor(up, dtype=dtype, device=device)
+
+    # Forward direction in world space
+    f = target - eye
+    f = f / (torch.norm(f) + 1e-8)
+
+    # Handle degenerate up (parallel to forward)
+    if torch.norm(torch.linalg.cross(f, up)) < 1e-6:
+        # pick an alternate up that's not parallel
+        up = torch.tensor([0.0, 0.0, 1.0], dtype=dtype, device=device)
+        if torch.norm(torch.linalg.cross(f, up)) < 1e-6:
+            up = torch.tensor([1.0, 0.0, 0.0], dtype=dtype, device=device)
+
+    # Build an orthonormal basis
+    # right
+    r = torch.linalg.cross(f, up)
+    r = r / (torch.norm(r) + 1e-8)
+    # true up
+    u = torch.linalg.cross(r, f)
+
+    # Camera's axes in world space depend on convention
+    if forward == "-z":
+        # OpenGL: X-right, Y-up, Z-backward
+        z_axis = -f  # camera +Z points backward
+        y_axis = u   # camera +Y points up
+    elif forward == "+z":
+        # CV: X-right, Y-down, Z-forward
+        z_axis = f    # camera +Z points forward
+        y_axis = -u   # camera +Y points down (flip Y for pixel row convention)
+    else:
+        raise ValueError("forward must be '-z' or '+z'")
+
+    # Camera-to-world: columns are camera axes in world coords
+    c2w = torch.eye(4, dtype=dtype, device=device)
+    c2w[:3, 0] = r
+    c2w[:3, 1] = y_axis
+    c2w[:3, 2] = z_axis
+    c2w[:3, 3] = eye
+
+    # World-to-camera
+    w2c = torch.linalg.inv(c2w)
+    return w2c, c2w
+
+def bbox_and_4_viewmats(
+    gaussian_3d: torch.Tensor,          # (N,3)
+    forward: str = "-z",
+    up=(0.0, 1.0, 0.0),
+    margin_factor: float = 4.0,         # “4 times outside” the bbox size
+) -> Tuple[Dict[str, torch.Tensor], Dict[str, torch.Tensor], Dict[str, torch.Tensor]]:
+    """
+    Computes 3D AABB + 4 canonical view matrices (front/back/left/right).
+
+    AABB:
+      - min_xyz (bottom-left-near-ish): (3,)
+      - max_xyz (top-right-far-ish):    (3,)
+      - center: (3,)
+      - extent: (3,) = max-min
+
+    Cameras:
+      - target is bbox center
+      - each eye starts at the center of the corresponding face of the bbox
+      - then moved outward along that face normal by: margin_factor * (extent along that axis)
+        (with a small epsilon fallback if that extent is ~0)
+
+    Returns:
+      viewmats: dict view->(4,4) world-to-camera
+      eyes:     dict view->(3,)
+      bbox:     dict with min_xyz, max_xyz, center, extent
+    """
+    assert gaussian_3d.ndim == 2 and gaussian_3d.shape[1] == 3, f"Expected (N,3), got {gaussian_3d.shape}"
+    device = gaussian_3d.device
+    dtype = gaussian_3d.dtype
+
+    # AABB
+    min_xyz = gaussian_3d.min(dim=0).values
+    max_xyz = gaussian_3d.max(dim=0).values
+    center = (min_xyz + max_xyz) * 0.5
+    extent = (max_xyz - min_xyz)
+
+    # Axis-aligned face centers
+    # x faces
+    left_face_center  = torch.stack([min_xyz[0], center[1], center[2]])
+    right_face_center = torch.stack([max_xyz[0], center[1], center[2]])
+    # z faces
+    back_face_center  = torch.stack([center[0], center[1], min_xyz[2]])
+    front_face_center = torch.stack([center[0], center[1], max_xyz[2]])
+
+    # How far to move outside each face (use axis extent; avoid zero extent)
+    eps = torch.tensor(1e-4, device=device, dtype=dtype)
+    dx = torch.maximum(extent[0], eps)
+    dz = torch.maximum(extent[2], eps)
+
+    # Outward normals for faces:
+    # left  face normal: -X
+    # right face normal: +X
+    # back  face normal: -Z
+    # front face normal: +Z
+    eyes = {
+        "left":  left_face_center  + torch.tensor([-1.0, 0.0, 0.0], device=device, dtype=dtype) * (margin_factor * dx),
+        "right": right_face_center + torch.tensor([ 1.0, 0.0, 0.0], device=device, dtype=dtype) * (margin_factor * dx),
+        "back":  back_face_center  + torch.tensor([ 0.0, 0.0,-1.0], device=device, dtype=dtype) * (margin_factor * dz),
+        "front": front_face_center + torch.tensor([ 0.0, 0.0, 1.0], device=device, dtype=dtype) * (margin_factor * dz),
+    }
+
+    # Build view matrices using the provided look_at_viewmatrix
+    viewmats = {}
+    for name, eye in eyes.items():
+        w2c, _c2w = look_at_viewmatrix(
+            eye=eye,
+            target=center,
+            up=up,
+            device=device,
+            dtype=dtype,
+            forward=forward,
+        )
+        viewmats[name] = w2c
+
+    bbox = {
+        "min_xyz": min_xyz,
+        "max_xyz": max_xyz,
+        "center": center,
+        "extent": extent,
+    }
+
+    return viewmats, eyes, bbox

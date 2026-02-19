@@ -1,34 +1,18 @@
 import os
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
-
 import numpy as np
 import torch
 from PIL import Image
 from torch.utils.data import Dataset
 from avatar_utils.config import get_config
+from avatar_utils.smplx_loader import load_smplx_coord3d
+from avatar_utils.smplx_loader import vertices_3d_to_2d
+from avatar_utils.camera import load_camera_mapping
 
 
 VIEW_ORDER = ["front", "back", "left", "right"]
 IMG_EXTS = (".png", ".jpg", ".jpeg")
-
-
-def apply_augmentations(
-    imgs_float: torch.Tensor, imgs_uint8: torch.Tensor, subject: str
-) -> Tuple[torch.Tensor, torch.Tensor]:
-    """
-    TODO: Implement data augmentations.
-
-    Args:
-        imgs_float: Tensor [V, C, H, W] in float32, normalized to [0,1].
-        imgs_uint8: Tensor [V, C, H, W] in uint8.
-        subject: Subject identifier (name of the processed folder).
-
-    Returns:
-        Potentially-augmented (imgs_float, imgs_uint8).
-
-    """
-    return imgs_float, imgs_uint8
 
 
 class AvatarDataset(Dataset):
@@ -41,6 +25,9 @@ class AvatarDataset(Dataset):
                 <subject>_back.(png|jpg|jpeg)
                 <subject>_left.(png|jpg|jpeg)
                 <subject>_right.(png|jpg|jpeg)
+                
+        Layout per smplx_param:
+            data/THuman_2.0_smplx_params/<subject>/mesh_smplx.obj
 
     Behavior is controlled by config value `data.num_views`:
       - If num_views == 1: only the 'front' view is loaded.
@@ -51,17 +38,16 @@ class AvatarDataset(Dataset):
       - images_uint8: torch.Uint8Tensor [V, C, H, W]
       - subject: str
       - view_names: List[str]
+      - vertices3d: Optional[torch.FloatTensor] [N, 3]
     """
 
     def __init__(self, root: str, transform: Optional[Any] = None):
+        # Config
         cfg = get_config()
         self.debug: bool = bool(cfg.get("sys", {}).get("debug", False))
         self.num_views: int = int(cfg.get("data", {}).get("num_views", 1))
-        if self.num_views not in (1, 4):
-            raise ValueError("data.num_views must be 1 or 4")
-
         self.root = Path(root)
-        self.transform = transform  # Optional external transform on float images
+        self.smplx_root = Path(cfg.get("data", {}).get("smplx_root", "data/THuman_2.0_smplx_params"))
 
         # Index subjects and required views
         self._records: List[Dict[str, Any]] = []
@@ -95,20 +81,32 @@ class AvatarDataset(Dataset):
         images_float = torch.stack(imgs_f, dim=0)  # [V,C,H,W]
         images_uint8 = torch.stack(imgs_u8, dim=0)  # [V,C,H,W]
 
-        # External transform applies to float images only, per-view
-        if self.transform is not None:
-            images_float = torch.stack([self.transform(v) for v in images_float], dim=0)
+        # Load SMPLX 3D vertices
+        smplx_path = self.smplx_root / rec["subject"] / "mesh_smplx.obj"
+        if smplx_path.exists():
+            vertices3d = load_smplx_coord3d(str(smplx_path))
+        else:
+            vertices3d = torch.empty(0, 3, dtype=torch.float32)
 
-        # Placeholder augmentations hook (no-op for now)
-        images_float, images_uint8 = apply_augmentations(
-            images_float, images_uint8, rec["subject"]
-        )
+        # Project 3D vertices to 2D for each view using precomputed camera params
+        if vertices3d.shape[0] > 0:
+            viewmats, Ks = load_camera_mapping(view_names)  # (V,4,4), (V,3,3)
+            verts2d_list = []
+            for v_idx in range(viewmats.shape[0]):
+                v2d = vertices_3d_to_2d(vertices3d, Ks[v_idx], viewmats[v_idx])
+                verts2d_list.append(v2d)
+            vertices2d = torch.stack(verts2d_list, dim=0)  # (V, Nv, 2)
+        else:
+            V = len(view_names)
+            vertices2d = torch.empty(V, 0, 2, dtype=torch.float32)
 
         return {
             "images_float": images_float,
             "images_uint8": images_uint8,
             "subject": rec["subject"],
             "view_names": view_names,
+            "vertices3d": vertices3d,
+            "vertices2d": vertices2d,
         }
 
     def _index_subjects(self) -> None:
@@ -184,4 +182,8 @@ class ViewsChunkedDataset(Dataset):
         }
         if "view_names" in sample:
             out["view_names"] = sample["view_names"][start:end]
+        if "vertices3d" in sample:
+            out["vertices3d"] = sample["vertices3d"]
+        if "vertices2d" in sample:
+            out["vertices2d"] = sample["vertices2d"][start:end]
         return out

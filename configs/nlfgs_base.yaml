@@ -1,12 +1,24 @@
 sys:
   device: cpu # 'cpu', 'cuda', 'cuda:0', etc.
-  debug: True
+  debug: False
 
 data:
   raw: data
   root: processed
+  smplx_root: data/THuman_2.0_smplx_paras
   num_views: 4
   template_path: models/avatar_template.ply
+  image_size: [1024, 1024]  # [W, H]
+
+camera:
+  distance: 1.5          # Camera distance from origin
+  yfov_deg: 45.0         # Vertical field of view in degrees
+  up: [0.0, 1.0, 0.0]    # Default up vector
+  viewpoints:            # Direction vectors for each canonical view
+    front: [0.0, 0.0, 1.0]
+    back: [0.0, 0.0, -1.0]
+    left: [-1.0, 0.0, 0.0]
+    right: [1.0, 0.0, 0.0]
 
 nlf:
   checkpoint_path: models/nlf_checkpoint/nlf_l_multi.torchscript

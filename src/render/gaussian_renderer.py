@@ -2,7 +2,7 @@ import os
 import torch
 from gsplat import rasterization
 from avatar_utils.config import get_config
-from avatar_utils.camera import load_camera_mapping
+from avatar_utils.camera import load_camera_mapping, look_at_viewmatrix, bbox_and_4_viewmats
 from typing import Sequence, Union
 from avatar_utils.config import get_config
 
@@ -54,6 +54,11 @@ class GsplatRenderer:
             backgrounds = torch.ones(3, device=gaussian_3d.device)
         else:
             backgrounds = backgrounds.to(gaussian_3d.device)
+            
+        # print min max values of gaussian_3d
+        print(f"Gaussian 3D centers min: {gaussian_3d.min(dim=0).values}")
+        print(f"Gaussian 3D centers max: {gaussian_3d.max(dim=0).values}")
+
         rendered_imgs, rendered_alphas, meta = rasterization(
             means=gaussian_3d,
             quats=gaussian_params["rotation"],
@@ -67,7 +72,7 @@ class GsplatRenderer:
             width=width,
             height=height,
             render_mode=render_mode,
-            backgrounds=backgrounds,
+            # backgrounds=backgrounds,
         )
         # rendered_imgs: (B, H, W, 3)
         if save_folder_path is not None:
