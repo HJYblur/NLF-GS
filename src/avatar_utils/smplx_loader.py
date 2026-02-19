@@ -4,8 +4,7 @@ import numpy
 
 def load_smplx_vertices(path: str, camera_intrinsics, w2c):
     """Load 3D vertices and its 2D projections from a SMPLX file."""
-    mesh = trimesh.load(path)
-    vertices = torch.from_numpy(mesh.vertices).float()
+    vertices = load_smplx_coord3d(path)
     # Check if camera_intrinsics and w2c are tensor
     if isinstance(camera_intrinsics, numpy.ndarray):
         camera_intrinsics = torch.from_numpy(camera_intrinsics).float()
@@ -13,6 +12,14 @@ def load_smplx_vertices(path: str, camera_intrinsics, w2c):
         w2c = torch.from_numpy(w2c).float()
     vertices_2d = vertices_3d_to_2d(vertices, camera_intrinsics, w2c)
     return vertices, vertices_2d
+
+
+def load_smplx_coord3d(path: str):
+    """Load 3D coordinates from a SMPLX file."""
+    mesh = trimesh.load(path)
+    vertices = torch.from_numpy(mesh.vertices).float()
+    return vertices
+
 
 def vertices_3d_to_2d(
         vertices3d: torch.FloatTensor, 

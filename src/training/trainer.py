@@ -71,17 +71,15 @@ class NlfGaussianModel(L.LightningModule):
 
     def training_step(self, batch: Dict[str, Any], batch_idx: int):
         # Extract data from batch
-        img_float, img_uint8, (B, H, W), subject, view_names = self.process_input(batch)
+        img_float, img_uint8, (B, H, W), subject, view_names, vertices3d, vertices2d = self.process_input(batch)
         self._logger.info(f"Processing subject: {subject}, views: {view_names}")
 
         grad_ctx = torch.inference_mode() if self.train_decoder_only else nullcontext()
         with grad_ctx:
             if self.debug:
-                feats, preds = self.load_debug_feats(img_float, img_uint8)
+                feats = self.load_debug_feats(img_float, img_uint8)[0]
             else:
-                feats, preds = self.backbone.detect_with_features(
-                    image_feature=img_float, frame_batch=img_uint8, use_half=True
-                )
+                feats = self.backbone.extract_feature_map(image=img_float, use_half=True)
 
         """
         Encode:
@@ -103,7 +101,7 @@ class NlfGaussianModel(L.LightningModule):
 
             local_feats, view_weights, gaussian_3d = (
                 self.avatar_estimator.feature_sample_with_visibility(
-                    feats, preds, img_shape=(H, W)
+                    feats, vertices3d, vertices2d, img_shape=(H, W)
                 )
             )  # (B, N, C_local), (B, N)
 
@@ -118,7 +116,6 @@ class NlfGaussianModel(L.LightningModule):
         # Free large intermediates early to reduce peak VRAM before decoding
         try:
             del feats
-            del preds
             del img_uint8
         except Exception:
             pass
@@ -193,9 +190,9 @@ class NlfGaussianModel(L.LightningModule):
                 pass
 
         if rendered_imgs is not None:
-            preds = rendered_imgs.permute(0, 3, 1, 2)  # (B, 3, H, W)
+            pred = rendered_imgs.permute(0, 3, 1, 2)  # (B, 3, H, W)
             gt = img_float  # (B, 3, H, W)
-            loss = self.loss_fn(preds, gt)
+            loss = self.loss_fn(pred, gt)
         else:
             loss = self._proxy_regularization_loss(gaussian_params)
         return loss
@@ -239,6 +236,8 @@ class NlfGaussianModel(L.LightningModule):
             "images_uint8": images_uint8,
             "subject": str,
             "view_names": List[str]
+            "vertices3d": Optional[torch.FloatTensor] [Nv, 3]
+            "vertices2d": Optional[torch.FloatTensor] [V, Nv, 2]
 
         Returns
         -------
@@ -248,6 +247,12 @@ class NlfGaussianModel(L.LightningModule):
             The original uint8 image used by the detector, shape (B,C,H,W) on self.device.
         (B, H, W) : tuple[int,int,int]
             Spatial dims extracted from `img_float`.
+        subject : str
+        view_names : List[str]
+        vertices3d : torch.Tensor
+            SMPLX 3D vertices, shape (Nv, 3) on self.device. Empty (0,3) if unavailable.
+        vertices2d : torch.Tensor
+            SMPLX 2D projections per view, shape (B, Nv, 2) on self.device. Empty (B,0,2) if unavailable.
         """
         assert (
             "images_float" in batch and "images_uint8" in batch
@@ -287,7 +292,25 @@ class NlfGaussianModel(L.LightningModule):
                 ]
         # Else leave None as-is
 
-        return img_float, img_uint8, (B, H, W), subject, view_names
+        # Extract SMPLX 3D vertices (shape [Nv, 3] or empty [0, 3])
+        vertices3d = batch.get("vertices3d", None)
+        if vertices3d is not None:
+            if vertices3d.ndim == 3 and vertices3d.shape[0] == 1:
+                vertices3d = vertices3d[0]
+            vertices3d = vertices3d.to(self.device)
+        else:
+            vertices3d = torch.empty(0, 3, dtype=torch.float32, device=self.device)
+
+        # Extract SMPLX 2D projections (shape [B, Nv, 2] or empty [B, 0, 2])
+        vertices2d = batch.get("vertices2d", None)
+        if vertices2d is not None:
+            if vertices2d.ndim == 4 and vertices2d.shape[0] == 1:
+                vertices2d = vertices2d[0]
+            vertices2d = vertices2d.to(self.device)
+        else:
+            vertices2d = torch.empty(B, 0, 2, dtype=torch.float32, device=self.device)
+
+        return img_float, img_uint8, (B, H, W), subject, view_names, vertices3d, vertices2d
 
     def load_debug_feats(self, img_float, img_uint8):
         feats_path = "debug_backbone_features.pt"

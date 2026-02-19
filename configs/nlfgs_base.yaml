@@ -1,6 +1,6 @@
 sys:
   device: cpu # 'cpu', 'cuda', 'cuda:0', etc.
-  debug: True
+  debug: False
 
 data:
   raw: data

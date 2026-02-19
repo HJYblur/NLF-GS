@@ -18,14 +18,16 @@ class AvatarGaussianEstimator(nn.Module):
     def template(self) -> AvatarTemplate:
         return self._avatar
 
-    def compute_gaussian_coord2d(self, feature_map, pred, img_shape: tuple = None):
-        """The function maps predicted 2d coordinates to batched per-gaussian 2D centers.
+    def compute_gaussian_coord2d(self, feature_map, vertices2d, img_shape: tuple = None):
+        """Map preloaded per-view 2D vertex positions to batched per-gaussian 2D centers.
 
-        Assumes at most 1 person per image;
-        handles v2d(list) with elements of shape (P,Nv,2).
+        Args:
+            feature_map: (B, C, H, W) feature tensor (used only for B and device).
+            vertices2d: (B, Nv, 2) preloaded 2D vertex positions per view.
+            img_shape: optional (H_img, W_img).
 
         Returns:
-            Tensor of shape (B, N, 2) with Gaussian centers.
+            Tensor of shape (B, N, 2) with Gaussian centers in pixel coords.
         """
         B = feature_map.shape[0]  # Batch size
         N = int(self._avatar.total_gaussians_num)  # Number of Gaussians
@@ -40,7 +42,7 @@ class AvatarGaussianEstimator(nn.Module):
 
         parents = parents.to(device=device, dtype=torch.long)  # (N,3)
         bary = bary.to(device=device, dtype=torch.float32)  # (K,3)
-        verts2d = self._stack_vertices2d(pred, device=device)  # (B,Nv,2)
+        verts2d = vertices2d.to(device=device, dtype=torch.float32)  # (B, Nv, 2)
         assert verts2d.shape[0] == B, "Batch size mismatch in vertices2d"
 
         idx = torch.arange(N, device=device) % K  # (N,)
@@ -57,10 +59,12 @@ class AvatarGaussianEstimator(nn.Module):
         # original image shape so grid_sample receives correct coordinates.
         return centers2d  # (B,N,2)
 
-    def compute_gaussian_coord3d(self, feature_map, pred):
-        """Batched per-gaussian 3D centers.
+    def compute_gaussian_coord3d(self, feature_map, vertices3d):
+        """Batched per-gaussian 3D centers from preloaded vertex positions.
 
-        Assumes at most 1 person per image when a people dimension exists.
+        Args:
+            feature_map: (B, C, H, W) feature tensor (used only for B and device).
+            vertices3d: (Nv, 3) preloaded 3D vertex positions (shared across views).
 
         Returns:
             Tensor of shape (B, N, 3).
@@ -77,7 +81,10 @@ class AvatarGaussianEstimator(nn.Module):
         # normalize types/devices
         parents = parents.to(device=device, dtype=torch.long)
         bary = bary.to(device=device, dtype=torch.float32)
-        verts3d = self._stack_vertices3d(pred, device=device)
+        # vertices3d is (Nv, 3); expand to (B, Nv, 3)
+        verts3d = vertices3d.to(device=device, dtype=torch.float32)
+        if verts3d.ndim == 2:
+            verts3d = verts3d.unsqueeze(0).expand(B, -1, -1)
         assert verts3d.shape[0] == B, "Batch size mismatch in vertices3d"
 
         # Map each gaussian to its barycentric row
@@ -95,31 +102,22 @@ class AvatarGaussianEstimator(nn.Module):
 
         return centers3d  # (B,N,3)
 
-    def _stack_vertices2d(self, pred, device):
-        cached = pred.get("_vertices2d_stack")
-        if cached is None:
-            v2d_list = pred["vertices2d"]  # A list of length B with (P, Nv, 2)
-            cached = torch.stack([v2d_raw[0] for v2d_raw in v2d_list], dim=0)
-            pred["_vertices2d_stack"] = cached
-        return cached.to(device=device)
+    def compute_gaussian_normals(self, vertices3d, device):
+        """Compute per-Gaussian normals from mesh face vertices.
 
-    def _stack_vertices3d(self, pred, device):
-        cached = pred.get("_vertices3d_stack")
-        if cached is None:
-            v3d_list = pred["vertices3d"]  # A list of length B with (P, Nv, 3)
-            cached = torch.stack([v3d_raw[0] for v3d_raw in v3d_list], dim=0)  # (B, Nv, 3)
-            pred["_vertices3d_stack"] = cached  # (B, Nv, 3)
-        return cached.to(device=device)
-
-    def compute_gaussian_normals(self, pred, device):
-        """Compute per-Gaussian normals from mesh face vertices."""
-        vertices3d = self._stack_vertices3d(pred, device=device)
-        B = vertices3d.shape[0]
+        Args:
+            vertices3d: (Nv, 3) or (B, Nv, 3) preloaded 3D vertex positions.
+            device: target device.
+        """
+        verts3d = vertices3d.to(device=device, dtype=torch.float32)
+        if verts3d.ndim == 2:
+            verts3d = verts3d.unsqueeze(0)
+        B = verts3d.shape[0]
         N = int(self._avatar.total_gaussians_num)
         parents = self._avatar.parents.to(device=device, dtype=torch.long)  # (N,3)
 
         flat_idx = parents.reshape(-1)  # (N*3,)
-        verts_sel = vertices3d.index_select(dim=1, index=flat_idx)  # (B, N*3, 3)
+        verts_sel = verts3d.index_select(dim=1, index=flat_idx)  # (B, N*3, 3)
         face_verts = verts_sel.reshape(B, N, 3, 3)  # (B, N, 3, 3)
 
         e1 = face_verts[:, :, 1] - face_verts[:, :, 0]
@@ -130,23 +128,32 @@ class AvatarGaussianEstimator(nn.Module):
         )  # (B,N,3)
         return normals
 
-    def build_depth_map(self, pred, img_shape: tuple, device):
-        """Approximate per-view depth map from projected mesh vertices."""
-        H_img, W_img = int(img_shape[0]), int(img_shape[1])
-        vertices2d = self._stack_vertices2d(pred, device=device)
-        vertices3d = self._stack_vertices3d(pred, device=device)
+    def build_depth_map(self, vertices3d, vertices2d, img_shape: tuple, device):
+        """Approximate per-view depth map from projected mesh vertices.
 
-        B, Nv, _ = vertices2d.shape
+        Args:
+            vertices3d: (Nv, 3) or (B, Nv, 3) preloaded 3D vertex positions.
+            vertices2d: (B, Nv, 2) preloaded 2D projections per view.
+            img_shape: (H_img, W_img).
+            device: target device.
+        """
+        H_img, W_img = int(img_shape[0]), int(img_shape[1])
+        v2d = vertices2d.to(device=device, dtype=torch.float32)
+        v3d = vertices3d.to(device=device, dtype=torch.float32)
+        if v3d.ndim == 2:
+            v3d = v3d.unsqueeze(0).expand(v2d.shape[0], -1, -1)
+
+        B, Nv, _ = v2d.shape
         depth_maps = torch.full(
             (B, H_img * W_img),
             float("inf"),
             device=device,
-            dtype=vertices3d.dtype,
+            dtype=v3d.dtype,
         )
 
-        x = torch.round(vertices2d[..., 0]).to(torch.long)
-        y = torch.round(vertices2d[..., 1]).to(torch.long)
-        z = vertices3d[..., 2]
+        x = torch.round(v2d[..., 0]).to(torch.long)
+        y = torch.round(v2d[..., 1]).to(torch.long)
+        z = v3d[..., 2]
 
         valid = (x >= 0) & (x < W_img) & (y >= 0) & (y < H_img)
         for b in range(B):
@@ -170,22 +177,33 @@ class AvatarGaussianEstimator(nn.Module):
     def compute_view_weights(
         self,
         feature_map,
-        pred,
+        vertices3d: torch.Tensor,
+        vertices2d: torch.Tensor,
         centers2d: torch.Tensor,
         centers3d: torch.Tensor,
         img_shape: tuple,
         depth_eps: float = 1e-3,
     ):
-        """Compute per-view weights using view angle and occlusion depth test."""
+        """Compute per-view weights using view angle and occlusion depth test.
+
+        Args:
+            feature_map: (B, C, H, W) feature tensor.
+            vertices3d: (Nv, 3) preloaded 3D vertex positions.
+            vertices2d: (B, Nv, 2) preloaded 2D projections per view.
+            centers2d: (B, N, 2) gaussian 2D centers.
+            centers3d: (B, N, 3) gaussian 3D centers.
+            img_shape: (H_img, W_img).
+            depth_eps: depth tolerance for occlusion test.
+        """
         device = feature_map.device
-        normals = self.compute_gaussian_normals(pred, device=device)  # (B, N, 3)
+        normals = self.compute_gaussian_normals(vertices3d, device=device)  # (B, N, 3)
 
         # [Question]: Is the view direction always facing same side as the normal?
         view_dir = -centers3d
         view_dir = view_dir / (torch.norm(view_dir, dim=-1, keepdim=True) + 1e-8)
         angle_weight = torch.sum(normals * view_dir, dim=-1).clamp_min(0.0)
 
-        depth_map = self.build_depth_map(pred, img_shape=img_shape, device=device)
+        depth_map = self.build_depth_map(vertices3d, vertices2d, img_shape=img_shape, device=device)
         H_img, W_img = int(img_shape[0]), int(img_shape[1])
 
         x = torch.round(centers2d[..., 0]).to(torch.long)
@@ -203,15 +221,21 @@ class AvatarGaussianEstimator(nn.Module):
         return angle_weight * visibility
 
     def feature_sample(
-        self, feature_map, pred, img_shape: tuple = None, centers2d: torch.Tensor = None
+        self, feature_map, vertices2d, img_shape: tuple = None, centers2d: torch.Tensor = None
     ):
         """Sample per-Gaussian local features from a feature map (batched).
+
+        Args:
+            feature_map: (B, C, Hf, Wf) feature tensor.
+            vertices2d: (B, Nv, 2) preloaded 2D projections per view.
+            img_shape: optional (H_img, W_img).
+            centers2d: optional precomputed (B, N, 2) gaussian 2D centers.
 
         Returns: (B, N, C)
         """
         if centers2d is None:
             centers2d = self.compute_gaussian_coord2d(
-                feature_map, pred, img_shape=img_shape
+                feature_map, vertices2d, img_shape=img_shape
             )
 
         B, C, Hf, Wf = feature_map.shape
@@ -253,18 +277,27 @@ class AvatarGaussianEstimator(nn.Module):
     def feature_sample_with_visibility(
         self,
         feature_map,
-        pred,
+        vertices3d,
+        vertices2d,
         img_shape: tuple = None,
         depth_eps: float = 1e-3,
     ):
-        """Sample per-view features and compute view weights for aggregation."""
+        """Sample per-view features and compute view weights for aggregation.
+
+        Args:
+            feature_map: (B, C, Hf, Wf) feature tensor.
+            vertices3d: (Nv, 3) preloaded 3D SMPLX vertices (shared across views).
+            vertices2d: (B, Nv, 2) preloaded 2D projections per view.
+            img_shape: optional (H_img, W_img).
+            depth_eps: depth threshold for visibility.
+        """
         centers2d = self.compute_gaussian_coord2d(
-            feature_map, pred, img_shape=img_shape
+            feature_map, vertices2d, img_shape=img_shape
         )
-        centers3d = self.compute_gaussian_coord3d(feature_map, pred)
+        centers3d = self.compute_gaussian_coord3d(feature_map, vertices3d)
 
         local_feats = self.feature_sample(
-            feature_map, pred, img_shape=img_shape, centers2d=centers2d
+            feature_map, vertices2d, img_shape=img_shape, centers2d=centers2d
         )  # (B, N, C)
 
         if img_shape is None:
@@ -272,7 +305,8 @@ class AvatarGaussianEstimator(nn.Module):
 
         view_weights = self.compute_view_weights(
             feature_map,
-            pred,
+            vertices3d,
+            vertices2d,
             centers2d=centers2d,
             centers3d=centers3d,
             img_shape=img_shape,
