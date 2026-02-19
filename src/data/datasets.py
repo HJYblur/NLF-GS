@@ -1,7 +1,6 @@
 import os
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
-
 import numpy as np
 import torch
 from PIL import Image
@@ -11,24 +10,6 @@ from avatar_utils.config import get_config
 
 VIEW_ORDER = ["front", "back", "left", "right"]
 IMG_EXTS = (".png", ".jpg", ".jpeg")
-
-
-def apply_augmentations(
-    imgs_float: torch.Tensor, imgs_uint8: torch.Tensor, subject: str
-) -> Tuple[torch.Tensor, torch.Tensor]:
-    """
-    TODO: Implement data augmentations.
-
-    Args:
-        imgs_float: Tensor [V, C, H, W] in float32, normalized to [0,1].
-        imgs_uint8: Tensor [V, C, H, W] in uint8.
-        subject: Subject identifier (name of the processed folder).
-
-    Returns:
-        Potentially-augmented (imgs_float, imgs_uint8).
-
-    """
-    return imgs_float, imgs_uint8
 
 
 class AvatarDataset(Dataset):
@@ -51,17 +32,17 @@ class AvatarDataset(Dataset):
       - images_uint8: torch.Uint8Tensor [V, C, H, W]
       - subject: str
       - view_names: List[str]
+      - vertices3d: Optional[torch.FloatTensor] [N, 3]
+      - vertices2d: Optional[torch.FloatTensor] [N, 2]
     """
 
     def __init__(self, root: str, transform: Optional[Any] = None):
+        # Config
         cfg = get_config()
         self.debug: bool = bool(cfg.get("sys", {}).get("debug", False))
         self.num_views: int = int(cfg.get("data", {}).get("num_views", 1))
-        if self.num_views not in (1, 4):
-            raise ValueError("data.num_views must be 1 or 4")
-
         self.root = Path(root)
-        self.transform = transform  # Optional external transform on float images
+        self.smplx_root = Path(cfg.get("data", {}).get("smplx_root", "data/THuman_2.0_smplx_params"))
 
         # Index subjects and required views
         self._records: List[Dict[str, Any]] = []
@@ -94,10 +75,6 @@ class AvatarDataset(Dataset):
 
         images_float = torch.stack(imgs_f, dim=0)  # [V,C,H,W]
         images_uint8 = torch.stack(imgs_u8, dim=0)  # [V,C,H,W]
-
-        # External transform applies to float images only, per-view
-        if self.transform is not None:
-            images_float = torch.stack([self.transform(v) for v in images_float], dim=0)
 
         # Placeholder augmentations hook (no-op for now)
         images_float, images_uint8 = apply_augmentations(
