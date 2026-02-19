@@ -197,8 +197,14 @@ def look_at_viewmatrix(
       w2c: (4,4) world-to-camera view matrix
       c2w: (4,4) camera-to-world (inverse pose)
     Convention:
-      - If forward == "-z": camera looks along -Z in camera space (common in graphics).
-      - If forward == "+z": camera looks along +Z in camera space (common in some CV).
+      - If forward == "-z": OpenGL / graphics convention.
+            Camera axes: X-right, Y-up, Z-backward (camera looks along -Z).
+      - If forward == "+z": CV / gsplat convention.
+            Camera axes: X-right, Y-down, Z-forward (camera looks along +Z).
+            This is equivalent to flipping both Y and Z relative to the OpenGL
+            convention, which keeps the handedness and ensures that standard
+            pinhole projection  p = K @ [X,Y,Z]^T / Z  maps Y-down to
+            increasing pixel rows (top-to-bottom), matching the rendered images.
     """
     eye = torch.as_tensor(eye, dtype=dtype, device=device)
     target = torch.as_tensor(target, dtype=dtype, device=device)
@@ -222,18 +228,22 @@ def look_at_viewmatrix(
     # true up
     u = torch.linalg.cross(r, f)
 
-    # Camera's +Z axis in world space depends on convention
+    # Camera's axes in world space depend on convention
     if forward == "-z":
+        # OpenGL: X-right, Y-up, Z-backward
         z_axis = -f  # camera +Z points backward
+        y_axis = u   # camera +Y points up
     elif forward == "+z":
-        z_axis = f   # camera +Z points forward
+        # CV: X-right, Y-down, Z-forward
+        z_axis = f    # camera +Z points forward
+        y_axis = -u   # camera +Y points down (flip Y for pixel row convention)
     else:
         raise ValueError("forward must be '-z' or '+z'")
 
     # Camera-to-world: columns are camera axes in world coords
     c2w = torch.eye(4, dtype=dtype, device=device)
     c2w[:3, 0] = r
-    c2w[:3, 1] = u
+    c2w[:3, 1] = y_axis
     c2w[:3, 2] = z_axis
     c2w[:3, 3] = eye
 
