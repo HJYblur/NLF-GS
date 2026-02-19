@@ -39,6 +39,10 @@ def vertices_3d_to_2d(
         vertices2d: [N, 2] tensor of 2D projected pixel coordinates
 
     """
+    # Align all tensors to the same device/dtype as vertices to avoid CPU/GPU mismatch
+    camera_intrinsics = camera_intrinsics.to(device=vertices3d.device, dtype=vertices3d.dtype)
+    w2c = w2c.to(device=vertices3d.device, dtype=vertices3d.dtype)
+
     # Step 1: Transform vertices from world space to camera space
     # Using standard matrix multiplication: P_cam = R @ P_world + t
     R = w2c[:3, :3]  # [3, 3] rotation (already has OpenGL Z-flip baked in)
