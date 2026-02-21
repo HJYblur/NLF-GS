@@ -6,10 +6,10 @@ A pipeline for training **personalized 3D avatars** from multi-view RGB images. 
 
 ## What it does
 
-1. **Image encoding** — An NLF backbone extracts dense image features and predicts SMPL-X parameters and 2D/3D vertices.
+1. **Image encoding** — An NLF backbone extracts dense image features.
 2. **Identity encoding** — Features are pooled over the avatar foreground to produce an identity latent vector.
 3. **Avatar template** — A fixed set of Gaussians is attached to the SMPL-X mesh (e.g. \(k\) per face). Each Gaussian has a canonical position and is posed via barycentric weights on its parent triangle.
-4. **Per-Gaussian features** — Backbone features are sampled at each Gaussian’s projected 2D position; 3D positions come from the posed mesh.
+4. **Per-Gaussian features** — Backbone features are sampled at each Gaussian’s projected 2D position; 3D positions come from the precomputed posed mesh.
 5. **Decoding** — A shared MLP (optionally conditioned on the identity latent) predicts per-Gaussian parameters: scale, rotation, opacity, spherical harmonics.
 6. **Rendering & loss** — A differentiable 3DGS renderer produces images; training uses photometric loss [TODO: Add more losses].
 
@@ -76,6 +76,8 @@ Training expects a **processed** directory of per-subject folders. Each subject 
 - Set **`data.num_views`** in config:
   - `1` — only `front` is loaded.
   - `4` — `front`, `back`, `left`, `right` (order in `VIEW_ORDER` in `datasets.py`).
+- **`data.smplx_root`** (config, default `data/THuman_2.0_smplx_params`) should point to a directory containing one folder per subject.
+- Inside each subject folder, a precomputed SMPL-X mesh named `mesh_smplx.obj`.
 
 Example:
 
@@ -86,6 +88,11 @@ processed/
     subject_a_back.png
     subject_a_left.png
     subject_a_right.png
+  subject_b/
+    ...
+data/THuman_2.0_smplx_params/
+  subject_a/
+    mesh_smplx.obj
   subject_b/
     ...
 ```
