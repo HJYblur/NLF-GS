@@ -108,7 +108,6 @@ class GaussianDecoder(nn.Module):
 
             # Free chunk temporaries ASAP
             del feats_chunk, h, out, split_out
-            torch.cuda.empty_cache() if torch.cuda.is_available() else None
 
         # Concatenate chunk results
         scales = torch.cat([x for x in parts["scales"]], dim=0)  # (N,3)

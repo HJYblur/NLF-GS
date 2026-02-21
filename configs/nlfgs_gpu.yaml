@@ -51,7 +51,8 @@ decoder:
 
 train:
   accelerator: cuda
-  batch_size: 4
+  precision: 16-mixed          # Use AMP (fp16) to halve VRAM on activations & weights
+  batch_size: 4                # Must match num_views (4 views fused per subject)
   num_workers: 2
   epochs: 10
   # Optional: fraction of data for validation split (0.0 disables val)
@@ -66,6 +67,8 @@ train:
   # Loss weights
   weight_rgb: 1.0
   weight_ssim: 0.5
+  # GPU memory profiling (logs peak VRAM per section)
+  profile_gpu: True
 
 render:
   save_path: output

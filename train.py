@@ -117,16 +117,26 @@ def main():
 
     # Trainer precision and accelerator
     precision = cfg.get("train", {}).get("precision")
+    accumulate = int(cfg.get("train", {}).get("accumulate_grad_batches", 1))
 
     # Improve CUDA memory behavior unless user overrides
     if "PYTORCH_CUDA_ALLOC_CONF" not in os.environ:
         os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
+
+    # GPU memory profiling callback
+    profile_gpu = cfg.get("train", {}).get("profile_gpu", False)
+    callbacks = []
+    if profile_gpu and device.type == "cuda":
+        from src.training.gpu_profiler import GpuMemoryProfilerCallback
+        callbacks.append(GpuMemoryProfilerCallback())
 
     trainer = L.Trainer(
         max_epochs=max_epochs,
         devices=1,
         accelerator=cfg.get("train", {}).get("accelerator", "cpu"),
         precision=precision if precision else None,
+        accumulate_grad_batches=accumulate,
+        callbacks=callbacks if callbacks else None,
         logger=False,
     )
     logger.info("Beginning trainer.fit()")

@@ -30,6 +30,7 @@ class NlfGaussianModel(L.LightningModule):
         super().__init__()
         self._logger = logging.getLogger("train")
         self.debug = bool(get_config().get("sys", {}).get("debug", False))
+        self._profile_gpu = bool(get_config().get("train", {}).get("profile_gpu", False))
         self.use_identity_encoder = bool(
             get_config().get("identity_encoder", {}).get("use_flag", True)
         )
@@ -69,17 +70,39 @@ class NlfGaussianModel(L.LightningModule):
         self._logger.info(f"Debug mode: {self.debug}")
 
 
+    def _log_gpu_mem(self, tag: str):
+        """Log GPU memory stats for the given tag (only when profile_gpu is on)."""
+        if not self._profile_gpu or not torch.cuda.is_available():
+            return
+        alloc = torch.cuda.memory_allocated() / 1024 ** 2
+        peak = torch.cuda.max_memory_allocated() / 1024 ** 2
+        self._logger.info(f"[GPU-MEM] {tag:30s} | alloc={alloc:.1f} MB  peak={peak:.1f} MB")
+
     def training_step(self, batch: Dict[str, Any], batch_idx: int):
         # Extract data from batch
         img_float, img_uint8, (B, H, W), subject, view_names, vertices3d, vertices2d = self.process_input(batch)
         self._logger.info(f"Processing subject: {subject}, views: {view_names}")
+        self._log_gpu_mem("after_data_load")
 
         grad_ctx = torch.inference_mode() if self.train_decoder_only else nullcontext()
         with grad_ctx:
             if self.debug:
                 feats = self.load_debug_feats(img_float, img_uint8)[0]
             else:
-                feats = self.backbone.extract_feature_map(image=img_float, use_half=True)
+                # Process backbone one view at a time to avoid holding B full-res
+                # feature maps on GPU simultaneously (saves ~(B-1)/B of backbone VRAM).
+                feat_list = []
+                for v_idx in range(B):
+                    f_v = self.backbone.extract_feature_map(
+                        image=img_float[v_idx : v_idx + 1], use_half=True
+                    )
+                    feat_list.append(f_v)
+                feats = torch.cat(feat_list, dim=0)  # (B, C, Hf, Wf)
+                del feat_list
+            # Stash GT images on CPU while encoder/decoder run; bring back for loss later
+            gt_images = img_float.detach().cpu()
+            del img_float
+        self._log_gpu_mem("after_backbone")
 
         """
         Encode:
@@ -104,6 +127,7 @@ class NlfGaussianModel(L.LightningModule):
                     feats, vertices3d, vertices2d, img_shape=(H, W)
                 )
             )  # (B, N, C_local), (B, N)
+        self._log_gpu_mem("after_feature_sampling")
 
         if local_feats.shape[0] > 1:
             weight_sum = view_weights.sum(dim=0, keepdim=True).clamp_min(1e-6)
@@ -114,16 +138,8 @@ class NlfGaussianModel(L.LightningModule):
             )  # (1, N, C_local)
 
         # Free large intermediates early to reduce peak VRAM before decoding
-        try:
-            del feats
-            del img_uint8
-        except Exception:
-            pass
-        if torch.cuda.is_available():
-            try:
-                torch.cuda.empty_cache()
-            except Exception:
-                pass
+        del feats
+        del img_uint8
 
         """
         Decode:
@@ -131,6 +147,7 @@ class NlfGaussianModel(L.LightningModule):
         """
 
         gaussian_params = self.decoder(local_feats, z_id)
+        self._log_gpu_mem("after_decode")
 
         # Debug check:
         if self.debug:
@@ -177,24 +194,18 @@ class NlfGaussianModel(L.LightningModule):
             rendered_imgs = None
 
         # Free combined inputs post-decoding
-        try:
-            del local_feats
-            del z_id
-            del gaussian_3d
-        except Exception:
-            pass
-        if torch.cuda.is_available():
-            try:
-                torch.cuda.empty_cache()
-            except Exception:
-                pass
+        del local_feats
+        del z_id
+        del gaussian_3d
+        self._log_gpu_mem("after_render")
 
         if rendered_imgs is not None:
             pred = rendered_imgs.permute(0, 3, 1, 2)  # (B, 3, H, W)
-            gt = img_float  # (B, 3, H, W)
+            gt = gt_images.to(self.device)  # Move GT back to GPU for loss
             loss = self.loss_fn(pred, gt)
         else:
             loss = self._proxy_regularization_loss(gaussian_params)
+        self._log_gpu_mem("after_loss")
         return loss
 
     def freeze_encoder(self):
@@ -268,9 +279,14 @@ class NlfGaussianModel(L.LightningModule):
         if img_uint8.ndim == 5 and img_uint8.shape[0] == 1:
             img_uint8 = img_uint8[0]
 
-        # Move tensors to module device
+        # Only move uint8 images to GPU when needed (debug mode); saves ~48 MB
+        debug = bool(get_config().get("sys", {}).get("debug", False))
+        if debug:
+            img_uint8 = img_uint8.to(self.device)
+        # else: keep on CPU
+
+        # Move float images to GPU
         img_float = img_float.to(self.device)
-        img_uint8 = img_uint8.to(self.device)
 
         B, _, H, W = img_float.shape
 
