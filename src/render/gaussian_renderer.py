@@ -44,6 +44,14 @@ class GsplatRenderer:
 
         width, height = get_config().get("data", {}).get("image_size", (1024, 1024))
 
+        # gsplat kernels in this environment don't support fp16 for projection.
+        # Force rasterization inputs to fp32 while keeping the rest of the training in AMP.
+        means32 = gaussian_3d.float().contiguous()
+        quats32 = gaussian_params["rotation"].float().contiguous()
+        scales32 = gaussian_params["scales"].float().contiguous()
+        alphas32 = gaussian_params["alpha"].float().contiguous()
+        colors32 = colors.float().contiguous()
+        
         # Load precomputed camera matrices (batched if a list is provided)
         viewmats, Ks = load_camera_mapping(view_name)  # (B, 4, 4), (B, 3, 3)
         viewmats = viewmats.to(gaussian_3d.device).contiguous()
@@ -60,12 +68,12 @@ class GsplatRenderer:
         print(f"Gaussian 3D centers max: {gaussian_3d.max(dim=0).values}")
 
         rendered_imgs, rendered_alphas, meta = rasterization(
-            means=gaussian_3d,
-            quats=gaussian_params["rotation"],
-            scales=gaussian_params["scales"],
-            opacities=gaussian_params["alpha"],
+            means=means32,
+            quats=quats32,
+            scales=scales32,
+            opacities=alphas32,
             sh_degree=self.sh_degree,
-            colors=colors,  # (N, K), usually K = 3
+            colors=colors32,  # (N, K), usually K = 3
             viewmats=viewmats,
             Ks=Ks,
             camera_model=camera_model,

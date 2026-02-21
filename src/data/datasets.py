@@ -46,6 +46,9 @@ class AvatarDataset(Dataset):
         cfg = get_config()
         self.debug: bool = bool(cfg.get("sys", {}).get("debug", False))
         self.num_views: int = int(cfg.get("data", {}).get("num_views", 1))
+        image_size = cfg.get("data", {}).get("image_size", (1024, 1024))
+        self.target_w: int = int(image_size[0])
+        self.target_h: int = int(image_size[1])
         self.root = Path(root)
         self.smplx_root = Path(cfg.get("data", {}).get("smplx_root", "data/THuman_2.0_smplx_params"))
 
@@ -72,6 +75,8 @@ class AvatarDataset(Dataset):
         imgs_u8: List[torch.Tensor] = []
         for p in view_paths:
             img = Image.open(p).convert("RGB")
+            if img.size != (self.target_w, self.target_h):
+                img = img.resize((self.target_w, self.target_h), Image.BILINEAR)
             arr = np.asarray(img)
             f = torch.from_numpy(arr.astype(np.float32) / 255.0).permute(2, 0, 1)
             u8 = torch.from_numpy(arr.astype(np.uint8)).permute(2, 0, 1)
