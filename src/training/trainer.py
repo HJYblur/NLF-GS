@@ -126,7 +126,9 @@ class NlfGaussianModel(L.LightningModule):
                 self.avatar_estimator.feature_sample_with_visibility(
                     feats, vertices3d, vertices2d, img_shape=(H, W)
                 )
-            )  # (B, N, C_local), (B, N)
+            )  # (B, N, C_local), (B, N), (B, N, 3)
+            
+        # self.debug3d(gaussian_3d[0], subject)
         self._log_gpu_mem("after_feature_sampling")
 
         if local_feats.shape[0] > 1:
@@ -379,3 +381,32 @@ class NlfGaussianModel(L.LightningModule):
             q = gaussian_params["rotation"]
             loss = loss + 0.1 * (q.norm(dim=-1) - 1.0).pow(2).mean()
         return loss
+    
+    def debug3d(self, vertices3d: torch.Tensor, subject:str):
+        # Show sample vertices3d images
+        from matplotlib import pyplot as plt
+        import numpy as np
+        pts = np.asarray(vertices3d.cpu())
+        assert pts.ndim == 2 and pts.shape[1] == 3, f"Expected (Nv, 3), got {pts.shape}"
+
+        fig = plt.figure()
+        ax = fig.add_subplot(111, projection="3d")
+        ax.scatter(pts[:, 0], pts[:, 1], pts[:, 2], c="blue", s=10)  # blue dots
+        ax.set_xlabel("X")
+        ax.set_ylabel("Y")
+        ax.set_zlabel("Z")
+        plt.savefig(f"output/{subject}_vertices3d.png", dpi=200, bbox_inches="tight")
+        plt.close()
+    
+    def debug2d(self, vertices2d:torch.Tensor, subject:str):
+        # Show sample vertices2d images
+        from matplotlib import pyplot as plt
+        import numpy as np
+        pts = np.asarray(vertices2d[0].cpu())
+        assert pts.ndim == 2 and pts.shape[1] == 2, f"Expected (Nv, 2), got {pts.shape}"
+
+        plt.figure()
+        plt.scatter(pts[:, 0], pts[:, 1], c="red", s=10)  # red dots
+        plt.axis("equal")  # keep x/y scale the same
+        plt.savefig(f"output/{subject}_vertices2d.png", dpi=200, bbox_inches="tight")
+        plt.close()
