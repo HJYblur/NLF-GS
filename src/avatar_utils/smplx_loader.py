@@ -1,6 +1,39 @@
+import logging
+import pickle
+from pathlib import Path
+
+import numpy
 import torch
 import trimesh
-import numpy
+
+_logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Cached SMPLX body model (loaded once per model_path + gender + num_pca_comps)
+# ---------------------------------------------------------------------------
+_SMPLX_MODEL_CACHE: dict = {}
+
+
+def _get_smplx_model(
+    model_path: str = "models/smplx",
+    gender: str = "neutral",
+    num_pca_comps: int = 12,
+):
+    """Return a cached :class:`smplx.SMPLX` body-model instance."""
+    key = (model_path, gender, num_pca_comps)
+    if key not in _SMPLX_MODEL_CACHE:
+        import smplx as _smplx
+
+        _SMPLX_MODEL_CACHE[key] = _smplx.SMPLX(
+            model_path=model_path,
+            gender=gender,
+            use_pca=True,
+            num_pca_comps=num_pca_comps,
+            flat_hand_mean=True,
+        )
+        _logger.info("Loaded SMPLX model from %s (gender=%s, pca=%d)", model_path, gender, num_pca_comps)
+    return _SMPLX_MODEL_CACHE[key]
+
 
 def load_smplx_vertices(path: str, camera_intrinsics, w2c):
     """Load 3D vertices and its 2D projections from a SMPLX file."""
@@ -15,10 +48,77 @@ def load_smplx_vertices(path: str, camera_intrinsics, w2c):
 
 
 def load_smplx_coord3d(path: str):
-    """Load 3D coordinates from a SMPLX file."""
+    """Load 3D SMPLX vertices in **standard SMPLX vertex ordering**.
+
+    Accepts either:
+    * A path to ``smplx_param.pkl`` – runs the SMPLX body model forward pass
+      and returns vertices in the canonical SMPLX vertex ordering (matching the
+      face indices used by the avatar template).
+    * A path to an ``.obj`` mesh file – falls back to loading via trimesh.
+      **Warning**: trimesh may reorder vertices, breaking the correspondence
+      with the avatar template's parent indices.
+
+    The preferred input is the ``.pkl`` parameter file.
+    """
+    p = Path(path)
+
+    if p.suffix == ".pkl":
+        return _load_smplx_coord3d_from_params(str(p))
+
+    # Legacy / fallback: load directly from mesh file
+    _logger.warning(
+        "Loading SMPLX vertices from %s via trimesh – vertex ordering may "
+        "not match the avatar template.  Prefer passing smplx_param.pkl.",
+        path,
+    )
     mesh = trimesh.load(path)
     vertices = torch.from_numpy(mesh.vertices).float()
     return vertices
+
+
+def _load_smplx_coord3d_from_params(
+    pkl_path: str,
+    model_path: str = "models/smplx",
+    gender: str = "neutral",
+    num_pca_comps: int = 12,
+) -> torch.Tensor:
+    """Generate 3D vertices from SMPLX parameters in standard ordering.
+
+    This guarantees the returned vertex indices are consistent with the
+    standard SMPLX topology (and therefore with the avatar template's
+    ``parents`` tensor).
+    """
+    with open(pkl_path, "rb") as f:
+        params = pickle.load(f)
+
+    model = _get_smplx_model(model_path, gender, num_pca_comps)
+
+    with torch.no_grad():
+        output = model(
+            betas=torch.from_numpy(params["betas"]).float(),
+            global_orient=torch.from_numpy(params["global_orient"]).float(),
+            body_pose=torch.from_numpy(params["body_pose"]).float(),
+            left_hand_pose=torch.from_numpy(params["left_hand_pose"]).float(),
+            right_hand_pose=torch.from_numpy(params["right_hand_pose"]).float(),
+            jaw_pose=torch.from_numpy(params["jaw_pose"]).float(),
+            leye_pose=torch.from_numpy(params["leye_pose"]).float(),
+            reye_pose=torch.from_numpy(params["reye_pose"]).float(),
+            expression=torch.from_numpy(params["expression"]).float(),
+        )
+
+    verts = output.vertices[0]  # (Nv, 3), standard ordering
+
+    # Apply scale and translation stored alongside the SMPLX params
+    if "scale" in params:
+        scale = float(params["scale"].squeeze())
+        verts = verts * scale
+    if "translation" in params:
+        translation = torch.from_numpy(
+            numpy.asarray(params["translation"], dtype=numpy.float32)
+        ).reshape(1, 3)
+        verts = verts + translation
+
+    return verts  # (Nv, 3) float32
 
 
 def vertices_3d_to_2d(

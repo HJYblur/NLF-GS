@@ -86,12 +86,17 @@ class AvatarDataset(Dataset):
         images_float = torch.stack(imgs_f, dim=0)  # [V,C,H,W]
         images_uint8 = torch.stack(imgs_u8, dim=0)  # [V,C,H,W]
 
-        # Load SMPLX 3D vertices
-        smplx_path = self.smplx_root / rec["subject"] / "mesh_smplx.obj"
-        if smplx_path.exists():
-            vertices3d = load_smplx_coord3d(str(smplx_path))
+        # Load SMPLX 3D vertices from parameter file (standard vertex ordering)
+        smplx_param_path = self.smplx_root / rec["subject"] / "smplx_param.pkl"
+        if smplx_param_path.exists():
+            vertices3d = load_smplx_coord3d(str(smplx_param_path))
         else:
-            vertices3d = torch.empty(0, 3, dtype=torch.float32)
+            # Fallback: try the OBJ mesh (vertex ordering may not match template)
+            smplx_obj_path = self.smplx_root / rec["subject"] / "mesh_smplx.obj"
+            if smplx_obj_path.exists():
+                vertices3d = load_smplx_coord3d(str(smplx_obj_path))
+            else:
+                vertices3d = torch.empty(0, 3, dtype=torch.float32)
 
         # Project 3D vertices to 2D for each view using precomputed camera params
         if vertices3d.shape[0] > 0:
