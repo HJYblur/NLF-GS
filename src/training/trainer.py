@@ -165,14 +165,13 @@ class NlfGaussianModel(L.LightningModule):
             gaussian_3d.shape[0] == self.num_views
         ), "Mismatch between gaussian_3d and num_views"
 
-        if self.debug:
-            # Use gaussian_params and gaussian_3ds to generate a .ply file as the reconstruction.
-            new_avatar = reconstruct_gaussian_avatar_as_ply(
-                xyz=gaussian_3d[0],
-                gaussian_params=gaussian_params,
-                template=self.template.load_avatar_template(mode="test"),
-                output_path=f"output/{subject}/{subject}_{view_names[0][0]}.ply",
-            )
+        # Use gaussian_params and gaussian_3ds to generate a .ply file as the reconstruction.
+        new_avatar = reconstruct_gaussian_avatar_as_ply(
+            xyz=gaussian_3d[0],
+            gaussian_params=gaussian_params,
+            template=self.template.load_avatar_template(mode="test"),
+            output_path=f"output/{subject}/{subject}_debug.ply",
+        )
 
         if self.device.type == "cuda":
             save_path = (

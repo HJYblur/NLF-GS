@@ -147,7 +147,7 @@ class GaussianDecoder(nn.Module):
 
         eps = 1e-6
         scales = F.softplus(scales_raw) + eps
-        scales = torch.clamp(scales, min=1e-6, max=3.0)
+        scales = torch.clamp(scales, min=1e-6, max=0.005)
 
         rot_norm = torch.linalg.norm(rot_raw, dim=-1, keepdim=True)
         rot = rot_raw / (rot_norm + 1e-8)

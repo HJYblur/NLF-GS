@@ -159,7 +159,7 @@ def _render_views(
     out_dir: Path,
     texture_path: Path | None,
     identity: str,
-    bg_color: list[int] | tuple[int, int, int] = (255, 255, 255),
+    bg_color: list[int] | tuple[int, int, int] = (0, 0, 0),
 ):
     """Render THuman meshes from canonical camera positions.
     
