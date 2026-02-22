@@ -27,6 +27,10 @@ class GaussianDecoder(nn.Module):
         self.out_dim = int(dec_cfg.get("out_dim", 56))
         self.z_dim = int(cfg.get("identity_encoder", {}).get("latent_dim", 64))
 
+        # Scale parameterization bounds (sigmoid-based, always differentiable)
+        self.scale_min = float(dec_cfg.get("scale_min", 1e-6))
+        self.scale_max = float(dec_cfg.get("scale_max", 0.01))
+
         # first local block
         self.fc1 = nn.Linear(self.in_dim, self.hidden)
         self.activation1 = nn.ReLU(inplace=True)
@@ -42,6 +46,34 @@ class GaussianDecoder(nn.Module):
             nn.ReLU(inplace=True),
             nn.Linear(self.hidden, self.out_dim),
         )
+
+        # --- Sensible output bias initialization ---
+        # Output layout: [scales(3), rotation(4), opacity(1), SH(rest)]
+        # Default Kaiming init gives raw ≈ 0; set biases so initial predictions
+        # are physically reasonable before any learning happens.
+        self._init_output_bias()
+
+    def _init_output_bias(self):
+        """Set the bias of the last MLP layer to produce sensible initial Gaussian params.
+
+        At raw=0 with default init the mapping is:
+          scales:   sigmoid(0)=0.5 → mid-range  (start smaller to avoid blobs)
+          rotation: ~random unit quat             (start at identity [1,0,0,0])
+          opacity:  sigmoid(0)=0.5                (start more opaque for visibility)
+          SH DC:    tanh(0)*0.5=0 → gsplat maps to color 0.5 (mid-gray, OK)
+        """
+        last_layer = self.mlp[-1]  # nn.Linear(hidden, out_dim)
+        with torch.no_grad():
+            last_layer.bias.zero_()
+            # Scales (indices 0-2): bias=-2 → sigmoid(-2)≈0.12 → small initial Gaussians
+            last_layer.bias[0:3] = -2.0
+            # Rotation (indices 3-6): bias toward identity quaternion [w=1, x=0, y=0, z=0]
+            last_layer.bias[3] = 1.0   # w component (dominant)
+            last_layer.bias[4:7] = 0.0  # x, y, z near zero
+            # Opacity (index 7): bias=2 → sigmoid(2)≈0.88, clearly visible
+            last_layer.bias[7] = 2.0
+            # SH (indices 8+): leave at 0 — gsplat convention adds 0.5,
+            # so DC=0 already yields ~0.5 (neutral mid-gray)
 
     def forward(self, combined_feats, z_id=None):
         """
@@ -145,9 +177,9 @@ class GaussianDecoder(nn.Module):
             else out.new_zeros((*out.shape[:-1], 0))
         )
 
-        eps = 1e-6
-        scales = F.softplus(scales_raw) + eps
-        scales = torch.clamp(scales, min=1e-6, max=0.005)
+        # Sigmoid-based bounded scaling: smooth gradients everywhere,
+        # prevents exploding Gaussians while avoiding hard-clamp dead zones.
+        scales = self.scale_min + (self.scale_max - self.scale_min) * torch.sigmoid(scales_raw)
 
         rot_norm = torch.linalg.norm(rot_raw, dim=-1, keepdim=True)
         rot = rot_raw / (rot_norm + 1e-8)

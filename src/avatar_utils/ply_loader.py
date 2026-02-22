@@ -305,7 +305,7 @@ def reconstruct_gaussian_avatar_as_ply(xyz, gaussian_params, template, output_pa
         "xyz": xyz,
         "scales": scales,
         "rots": rots,
-        "alphas": alphas,
+        "opacities": alphas,
         "shs": shs,
         "parent": template["parent"],
     }

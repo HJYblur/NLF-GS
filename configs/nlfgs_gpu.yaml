@@ -49,6 +49,8 @@ decoder:
   hidden: 256
   sh_degree: 3
   out_dim: 56
+  scale_min: 1.0e-6     # sigmoid lower bound for Gaussian scale
+  scale_max: 0.01       # sigmoid upper bound for Gaussian scale
 
 train:
   accelerator: cuda
