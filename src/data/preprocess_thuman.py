@@ -1,6 +1,7 @@
 import os
 import sys
 from pathlib import Path
+import argparse
 
 # Make 'avatar_utils' importable when running as a script
 # Add the 'src' directory to sys.path so imports like 'from avatar_utils.x import y' work
@@ -73,9 +74,26 @@ VIEWPOINTS = {k: np.array(v) for k, v in CAMERA_CONFIG["viewpoints"].items()}
 CAMERA_MAP_ROOT = Path(__file__).resolve().parents[2] / "data" / "THuman_cameras"
 
 
-def _iter_identities(root: Path):
+def _iter_identities(
+    root: Path,
+    start_subject: str | None = None,
+    end_subject: str | None = None,
+):
+    start_id = int(start_subject) if start_subject is not None else None
+    end_id = int(end_subject) if end_subject is not None else None
+
     for entry in sorted(root.iterdir()):
         if entry.is_dir():
+            try:
+                subject_id = int(entry.name)
+            except ValueError:
+                continue
+
+            if start_id is not None and subject_id < start_id:
+                continue
+            if end_id is not None and subject_id > end_id:
+                continue
+
             obj_files = list(entry.glob("*.obj"))
             if obj_files:
                 yield entry.name, obj_files[0]
@@ -324,16 +342,21 @@ def generate_camera_mapping(
     print(f"Camera mappings written to: {output_dir}")
 
 
-def preprocess_thuman(data_root: Path = DATA_ROOT, out_root: Path = OUT_ROOT):
+def preprocess_thuman(
+    data_root: Path = DATA_ROOT,
+    out_root: Path = OUT_ROOT,
+    start_subject: str | None = None,
+    end_subject: str | None = None,
+):
     os.makedirs(out_root, exist_ok=True)
     # Proactively generate camera mappings if not present
     try:
         generate_camera_mapping(output_dir=CAMERA_MAP_ROOT)
-    except Exception:
+    except Exception as e:
         raise RuntimeError(
             f"Failed to generate camera mapping. Ensure that pyrender and its dependencies are properly installed and that a compatible OpenGL context is available. You may try setting PYOPENGL_PLATFORM=egl or PYOPENGL_PLATFORM=osmesa in your environment variables. Original error: {e}"
         )
-    for identity, obj_path in _iter_identities(data_root):
+    for identity, obj_path in _iter_identities(data_root, start_subject, end_subject):
         target_dir = out_root / identity
         target_dir.mkdir(parents=True, exist_ok=True)
         meshes = _load_meshes(obj_path)
@@ -343,4 +366,22 @@ def preprocess_thuman(data_root: Path = DATA_ROOT, out_root: Path = OUT_ROOT):
 
 
 if __name__ == "__main__":
-    preprocess_thuman()
+    parser = argparse.ArgumentParser(description="Preprocess THuman subjects by rendering views.")
+    parser.add_argument(
+        "--start-subject",
+        type=str,
+        default=None,
+        help="Start subject id (inclusive), e.g. 0054",
+    )
+    parser.add_argument(
+        "--end-subject",
+        type=str,
+        default=None,
+        help="End subject id (inclusive), e.g. 0100",
+    )
+    args = parser.parse_args()
+
+    preprocess_thuman(
+        start_subject=args.start_subject,
+        end_subject=args.end_subject,
+    )
