@@ -63,9 +63,9 @@ class GsplatRenderer:
         else:
             backgrounds = backgrounds.to(gaussian_3d.device)
             
-        # print min max values of gaussian_3d
-        print(f"Gaussian 3D centers min: {gaussian_3d.min(dim=0).values}")
-        print(f"Gaussian 3D centers max: {gaussian_3d.max(dim=0).values}")
+        # # print min max values of gaussian_3d
+        # print(f"Gaussian 3D centers min: {gaussian_3d.min(dim=0).values}")
+        # print(f"Gaussian 3D centers max: {gaussian_3d.max(dim=0).values}")
 
         rendered_imgs, rendered_alphas, meta = rasterization(
             means=means32,

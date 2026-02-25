@@ -13,6 +13,7 @@ h5py>=3.1.0
 tqdm>=4.62.0
 
 # 3D / geometry libs used by core code (avatar templates / ply IO)
+smplx
 trimesh>=3.9.0
 plyfile>=0.7.2
 pyrender>=0.1.45

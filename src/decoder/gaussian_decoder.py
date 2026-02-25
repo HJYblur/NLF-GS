@@ -185,7 +185,6 @@ class GaussianDecoder(nn.Module):
         rot = rot_raw / (rot_norm + 1e-8)
 
         alpha = torch.sigmoid(alpha_raw)
-        alpha = torch.clamp(alpha, min=1e-6, max=1.0)
 
         sh = torch.tanh(sh_raw) * 0.5
 

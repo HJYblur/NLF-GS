@@ -53,13 +53,14 @@ decoder:
   scale_max: 0.01       # sigmoid upper bound for Gaussian scale
 
 train:
+  # Base settings
   accelerator: cuda
   precision: 16-mixed          # Use AMP (fp16) to halve VRAM on activations & weights
   batch_size: 4                # Must match num_views (4 views fused per subject)
   num_workers: 2
   epochs: 10
-  # Optional: fraction of data for validation split (0.0 disables val)
-  val_ratio: 0.0
+  val_ratio: 0.2
+
   # Optimizer & scheduler settings
   lr: 0.0001
   weight_decay: 0.0
@@ -67,9 +68,11 @@ train:
   eps: 1.0e-8
   warmup_ratio: 0.05  # fraction of total steps used for linear warmup
   scheduler: cosine 
+
   # Loss weights
   weight_rgb: 1.0
   weight_ssim: 0.5
+  
   # GPU memory profiling (logs peak VRAM per section)
   profile_gpu: False
 
