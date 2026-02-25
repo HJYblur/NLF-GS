@@ -47,8 +47,8 @@ avatar:
 decoder:
   in_dim: 512  # local feature dim
   hidden: 256
-  sh_degree: 3
-  out_dim: 56
+  sh_degree: 1
+  out_dim: 20
   scale_min: 1.0e-6     # sigmoid lower bound for Gaussian scale
   scale_max: 0.01       # sigmoid upper bound for Gaussian scale
 

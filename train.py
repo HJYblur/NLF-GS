@@ -6,6 +6,7 @@ from pathlib import Path
 
 import torch
 import lightning as L
+from lightning.pytorch.loggers import WandbLogger
 
 # Make 'src' importable when running as a script
 sys.path.append(str(Path(__file__).parent / "src"))
@@ -115,6 +116,14 @@ def main():
     max_epochs = int(cfg["train"]["epochs"]) if "train" in cfg else 1
     logger.info(f"Training for max_epochs={max_epochs}")
 
+    wandb_logger = WandbLogger(
+        project="avatar-training",
+        entity="lemon-tu-delft",
+        save_dir=str(Path(__file__).parent / "logs"),
+        log_model=False,
+    )
+    wandb_logger.log_hyperparams({"config": cfg, "config_path": args.config})
+
     # Trainer precision and accelerator
     precision = cfg.get("train", {}).get("precision")
     accumulate = int(cfg.get("train", {}).get("accumulate_grad_batches", 1))
@@ -137,7 +146,8 @@ def main():
         precision=precision if precision else None,
         accumulate_grad_batches=accumulate,
         callbacks=callbacks if callbacks else None,
-        logger=False,
+        logger=wandb_logger,
+        log_every_n_steps=10,
     )
     logger.info("Beginning trainer.fit()")
     trainer.fit(module, datamodule=dm)
@@ -147,8 +157,8 @@ def main():
 def setup_logger(debug: bool = False) -> logging.Logger:
     """Initialize and return the project logger.
 
-    If debug is True, set level to DEBUG; otherwise INFO. Writes logs to both stdout
-    and a file under ./logs/train.log.
+    If debug is True, set level to DEBUG; otherwise INFO. Writes logs to
+    ./logs/train.log.
     """
     log_dir = Path(__file__).parent / "logs"
     log_dir.mkdir(exist_ok=True)
@@ -158,7 +168,6 @@ def setup_logger(debug: bool = False) -> logging.Logger:
         level=level,
         format="%(asctime)s %(levelname)-8s %(name)s - %(message)s",
         handlers=[
-            logging.StreamHandler(sys.stdout),
             logging.FileHandler(str(log_file)),
         ],
     )

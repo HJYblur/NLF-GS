@@ -35,7 +35,7 @@ class GsplatRenderer:
         """
         # Process sh because gsplat expects SH coefficients with shape […, N, K, 3],
         # where K is the number of SH coefficients.
-        shs = gaussian_params["sh"]  # (N, K), K = (sh_degree + 1)^2 = 16
+        shs = gaussian_params["sh"]  # (N, K), K = (sh_degree + 1)^2 * 3
         N, K = shs.shape
         assert (
             K == (self.sh_degree + 1) ** 2 * 3

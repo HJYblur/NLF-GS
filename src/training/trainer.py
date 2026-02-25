@@ -69,20 +69,23 @@ class NlfGaussianModel(L.LightningModule):
             
         self._logger.info(f"Debug mode: {self.debug}")
 
-
-    def _log_gpu_mem(self, tag: str):
-        """Log GPU memory stats for the given tag (only when profile_gpu is on)."""
-        if not self._profile_gpu or not torch.cuda.is_available():
-            return
-        alloc = torch.cuda.memory_allocated() / 1024 ** 2
-        peak = torch.cuda.max_memory_allocated() / 1024 ** 2
-        self._logger.info(f"[GPU-MEM] {tag:30s} | alloc={alloc:.1f} MB  peak={peak:.1f} MB")
-
     def training_step(self, batch: Dict[str, Any], batch_idx: int):
+        loss_dict = self.shared_step(batch=batch, batch_idx=batch_idx, stage="train")
+        for k, v in loss_dict.items():
+            self.log(f"train/{k}", v)
+        return loss_dict["loss"]
+
+    def validation_step(self, batch: Dict[str, Any], batch_idx: int):
+        val_loss_dict = self.shared_step(batch=batch, batch_idx=batch_idx, stage="val")
+        for k,v in val_loss_dict.items():
+            self.log(f"val/{k}", v, prog_bar=(k=="loss"))
+        return val_loss_dict["loss"]
+
+    def shared_step(self, batch: Dict[str, Any], batch_idx: int, stage: str) -> torch.Tensor:
         # Extract data from batch
         img_float, img_uint8, (B, H, W), subject, view_names, vertices3d, vertices2d = self.process_input(batch)
-        self._logger.info(f"Processing subject: {subject}, views: {view_names}")
-        self._log_gpu_mem("after_data_load")
+        if stage == "train":
+            self._logger.info(f"Processing subject: {subject}, views: {view_names}")
 
         grad_ctx = torch.inference_mode() if self.train_decoder_only else nullcontext()
         with grad_ctx:
@@ -99,10 +102,9 @@ class NlfGaussianModel(L.LightningModule):
                     feat_list.append(f_v)
                 feats = torch.cat(feat_list, dim=0)  # (B, C, Hf, Wf)
                 del feat_list
-            # Stash GT images on CPU while encoder/decoder run; bring back for loss later
-            gt_images = img_float.detach().cpu()
+            # # Stash GT images on CPU while encoder/decoder run; bring back for loss later
+            gt_images = img_float
             del img_float
-        self._log_gpu_mem("after_backbone")
 
         """
         Encode:
@@ -112,15 +114,12 @@ class NlfGaussianModel(L.LightningModule):
         """
         B_feats, C_local, Hf, Wf = feats.shape
         assert B == B_feats, "Batch size mismatch between image and features"
-        N = int(self.template.total_gaussians_num)
 
         with grad_ctx:
             if self.use_identity_encoder:
                 z_id = self.identity_encoder(feature_map=feats)  # (1, D)
-                self._logger.debug(f"Identity latent vector z_id shape: {z_id.shape}")
             else:
                 z_id = None
-                self._logger.info("Skipping identity encoder.")
 
             local_feats, view_weights, gaussian_3d = (
                 self.avatar_estimator.feature_sample_with_visibility(
@@ -129,7 +128,6 @@ class NlfGaussianModel(L.LightningModule):
             )  # (B, N, C_local), (B, N), (B, N, 3)
             
         # self.debug3d(gaussian_3d[0], subject)
-        self._log_gpu_mem("after_feature_sampling")
 
         if local_feats.shape[0] > 1:
             weight_sum = view_weights.sum(dim=0, keepdim=True).clamp_min(1e-6)
@@ -149,7 +147,6 @@ class NlfGaussianModel(L.LightningModule):
         """
 
         gaussian_params = self.decoder(local_feats, z_id)
-        self._log_gpu_mem("after_decode")
 
         # Debug check:
         if self.debug:
@@ -167,7 +164,7 @@ class NlfGaussianModel(L.LightningModule):
             gaussian_3d.shape[0] == self.num_views
         ), "Mismatch between gaussian_3d and num_views"
 
-        if self.debug:
+        if self.debug and stage == "train":
             # Use gaussian_params and gaussian_3ds to generate a .ply file as the reconstruction.
             new_avatar = reconstruct_gaussian_avatar_as_ply(
                 xyz=gaussian_3d[0],
@@ -176,39 +173,40 @@ class NlfGaussianModel(L.LightningModule):
                 output_path=f"output/{subject}/{subject}_debug.ply",
             )
 
-        if self.device.type == "cuda":
-            save_path = (
-                Path(get_config().get("render", {}).get("save_path", "output"))
-                / subject
-            )
-            rendered_imgs = self.renderer.render(
-                gaussian_3d=gaussian_3d[0],
-                gaussian_params=gaussian_params,
-                view_name=view_names,
-                save_folder_path=save_path,
-            )  # (V, H, W, 3)
-            if not rendered_imgs.requires_grad:
-                # Renderer returned a non-differentiable tensor; fall back to proxy loss
-                rendered_imgs = None
-        else:
-            # No differentiable renderer available on CPU; use a proxy
-            # regularization loss on gaussian_params to keep gradients flowing.
+        num_train_batches = len(self.trainer.datamodule.train_dataloader())
+        test_renders = set(
+            torch.linspace(0, num_train_batches - 1, steps=10, dtype=torch.long).tolist()
+        )
+        save_path = (
+            Path(get_config().get("render", {}).get("save_path", "output"))
+            / subject
+        ) if int(subject) in test_renders else None
+        rendered_imgs = self.renderer.render(
+            gaussian_3d=gaussian_3d[0],
+            gaussian_params=gaussian_params,
+            view_name=view_names,
+            save_folder_path=save_path,
+        )  # (V, H, W, 3)
+        if not rendered_imgs.requires_grad:
+            # Renderer returned a non-differentiable tensor; fall back to proxy loss
             rendered_imgs = None
 
         # Free combined inputs post-decoding
         del local_feats
         del z_id
         del gaussian_3d
-        self._log_gpu_mem("after_render")
+        # if stage == "train":
+        #     self._log_gpu_mem("after_render")
 
         if rendered_imgs is not None:
             pred = rendered_imgs.permute(0, 3, 1, 2)  # (B, 3, H, W)
-            gt = gt_images.to(self.device)  # Move GT back to GPU for loss
-            loss = self.loss_fn(pred, gt)
+            gt = gt_images # .to(self.device)  # Move GT back to GPU for loss
+            loss_dict = self.loss_fn(pred, gt)
         else:
-            loss = self._proxy_regularization_loss(gaussian_params)
-        self._log_gpu_mem("after_loss")
-        return loss
+            print("ERROROROROROROR SHOULD NEVER APPEAR!!!")
+            loss_dict = self._proxy_regularization_loss(gaussian_params)
+
+        return loss_dict
 
     def freeze_encoder(self):
         for p in self.identity_encoder.parameters():
@@ -240,6 +238,9 @@ class NlfGaussianModel(L.LightningModule):
             "lr_scheduler": {"scheduler": scheduler, "interval": "step"},
         }
 
+    def on_train_batch_end(self, outputs, batch, batch_idx):
+        lr = self.trainer.optimizers[0].param_groups[0]["lr"]
+        self.log("train/lr", lr, prog_bar=True)
 
     def process_input(self, batch):
         """Extract tensors from the dataset batch and normalize shape/device.
@@ -281,14 +282,14 @@ class NlfGaussianModel(L.LightningModule):
         if img_uint8.ndim == 5 and img_uint8.shape[0] == 1:
             img_uint8 = img_uint8[0]
 
-        # Only move uint8 images to GPU when needed (debug mode); saves ~48 MB
-        debug = bool(get_config().get("sys", {}).get("debug", False))
-        if debug:
-            img_uint8 = img_uint8.to(self.device)
-        # else: keep on CPU
+        # # Only move uint8 images to GPU when needed (debug mode); saves ~48 MB
+        # debug = bool(get_config().get("sys", {}).get("debug", False))
+        # if debug:
+        #     img_uint8 = img_uint8.to(self.device)
+        # # else: keep on CPU
 
-        # Move float images to GPU
-        img_float = img_float.to(self.device)
+        # # Move float images to GPU
+        # img_float = img_float.to(self.device)
 
         B, _, H, W = img_float.shape
 
@@ -315,18 +316,18 @@ class NlfGaussianModel(L.LightningModule):
         if vertices3d is not None:
             if vertices3d.ndim == 3 and vertices3d.shape[0] == 1:
                 vertices3d = vertices3d[0]
-            vertices3d = vertices3d.to(self.device)
+            # vertices3d = vertices3d.to(self.device)
         else:
-            vertices3d = torch.empty(0, 3, dtype=torch.float32, device=self.device)
+            vertices3d = torch.empty(0, 3) #, dtype=torch.float32, device=self.device)
 
         # Extract SMPLX 2D projections (shape [B, Nv, 2] or empty [B, 0, 2])
         vertices2d = batch.get("vertices2d", None)
         if vertices2d is not None:
             if vertices2d.ndim == 4 and vertices2d.shape[0] == 1:
                 vertices2d = vertices2d[0]
-            vertices2d = vertices2d.to(self.device)
+            # vertices2d = vertices2d.to(self.device)
         else:
-            vertices2d = torch.empty(B, 0, 2, dtype=torch.float32, device=self.device)
+            vertices2d = torch.empty(B, 0, 2) #, dtype=torch.float32, device=self.device)
 
         return img_float, img_uint8, (B, H, W), subject, view_names, vertices3d, vertices2d
 
@@ -381,7 +382,7 @@ class NlfGaussianModel(L.LightningModule):
             # Encourage unit quaternions (norm ~ 1)
             q = gaussian_params["rotation"]
             loss = loss + 0.1 * (q.norm(dim=-1) - 1.0).pow(2).mean()
-        return loss
+        return {"loss": loss}
     
     def debug3d(self, vertices3d: torch.Tensor, subject:str):
         # Show sample vertices3d images
