@@ -155,6 +155,7 @@ Important sections:
 - **`sys.device`** — `cpu` or `cuda` (or `cuda:0` etc.).
 - **`data.root`** — Directory of processed subject folders (default `processed`).
 - **`data.num_views`** — `1` or `4`.
+- **`data.augmentation`** — photometric training augmentation settings. Augmentations are synchronized across all views in a sample (same jitter/noise/compression applied to front/back/left/right).
 - **`nlf.checkpoint_path`** — Path to the NLF TorchScript file.
 - **`train`** — `accelerator`, `epochs`, `batch_size`, `lr`, `val_ratio`, `weight_rgb`, `weight_ssim`, etc.
 - **`render.save_path`** — Where to save rendered images (e.g. `output`).
