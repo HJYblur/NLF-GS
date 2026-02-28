@@ -71,11 +71,11 @@ train:
 
   # Loss weights
   weight_rgb: 1.0
-  weight_l1: 0.8
+  weight_l1: 0.5
   weight_masked_ssim: 0.2
-  weight_perceptual: 0.0
-  weight_scale_reg: 0.0
-  weight_opacity_reg: 0.0
+  weight_perceptual: 0.3
+  weight_scale_reg: 0.01
+  weight_opacity_reg: 0.05
   weight_multiview_consistency: 0.0
   
   # GPU memory profiling (logs peak VRAM per section)

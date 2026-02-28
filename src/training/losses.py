@@ -134,31 +134,32 @@ class LossFunctions(nn.Module):
         masked_ssim_val = self._masked_ssim(pred_imgs, gt_imgs, fg_mask)
         perceptual_loss = self._masked_multiscale_perceptual(pred_imgs, gt_imgs, fg_mask)
 
-        scale_reg, opacity_reg = self.regularization_loss(
-            gaussian_params, device=pred_imgs.device
-        )
-        multiview_consistency = self.multiview_consistency_loss(
-            gaussian_3d, device=pred_imgs.device
-        )
+        # scale_reg, opacity_reg = self.regularization_loss(
+        #     gaussian_params, device=pred_imgs.device
+        # )
+        # multiview_consistency = self.multiview_consistency_loss(
+        #     gaussian_3d, device=pred_imgs.device
+        # )
 
         photometric = (
             self.weight_l1 * l1_loss
             + self.weight_masked_ssim * (1 - masked_ssim_val)
             + self.weight_perceptual * perceptual_loss
         )
-        final_loss = (
-            self.weight_rgb * photometric
-            + self.weight_scale_reg * scale_reg
-            + self.weight_opacity_reg * opacity_reg
-            + self.weight_multiview_consistency * multiview_consistency
-        )
+        final_loss = photometric
+        # (
+        #     self.weight_rgb * photometric
+        #     + self.weight_scale_reg * scale_reg
+        #     + self.weight_opacity_reg * opacity_reg
+        #     + self.weight_multiview_consistency * multiview_consistency
+        # )
 
         return {
             "loss": final_loss,
             "l1": l1_loss,
             "masked_ssim": masked_ssim_val,
             "perceptual": perceptual_loss,
-            "scale_reg": scale_reg,
-            "opacity_reg": opacity_reg,
-            "multiview_consistency": multiview_consistency,
+            # "scale_reg": scale_reg,
+            # "opacity_reg": opacity_reg,
+            # "multiview_consistency": multiview_consistency,
         }
