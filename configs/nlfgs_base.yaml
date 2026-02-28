@@ -64,3 +64,12 @@ train:
   eps: 1.0e-8
   warmup_ratio: 0.05  # fraction of total steps used for linear warmup
   scheduler: cosine   # options: cosine
+
+  # Loss weights
+  weight_rgb: 1.0
+  weight_l1: 0.8
+  weight_masked_ssim: 0.2
+  weight_perceptual: 0.0
+  weight_scale_reg: 0.0
+  weight_opacity_reg: 0.0
+  weight_multiview_consistency: 0.0
