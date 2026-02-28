@@ -105,7 +105,7 @@ class SynchronizedPhotometricAugmentation:
             pil_img.save(buf, format="JPEG", quality=quality)
             buf.seek(0)
             decoded = Image.open(buf).convert("RGB")
-            t = torch.from_numpy(np.asarray(decoded))
+            t = torch.from_numpy(np.array(decoded, dtype=np.uint8, copy=True))
             t = t.permute(2, 0, 1).float() / 255.0
             out.append(t)
         return torch.stack(out, dim=0).to(images.device)
