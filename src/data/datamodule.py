@@ -1,4 +1,4 @@
-from typing import Optional, Dict, Any, Callable
+from typing import Optional, Dict, Any
 
 import math
 import torch
@@ -20,14 +20,22 @@ class AvatarDataModule(L.LightningDataModule):
     def setup(self, stage: Optional[str] = None):
         data_cfg = self.cfg.get("data", {})
         train_cfg = self.cfg.get("train", {})
-        base_ds = AvatarDataset(
+
+        train_base_ds = AvatarDataset(
             root=data_cfg.get("root", "processed"),
             transform=None,
+            enable_augmentation=True,
         )
+        eval_base_ds = AvatarDataset(
+            root=data_cfg.get("root", "processed"),
+            transform=None,
+            enable_augmentation=False,
+        )
+
         # Chunk views sequentially based on desired views-per-batch (use train batch_size)
         chunk_size = int(train_cfg.get("batch_size", 4))
 
-        n = len(base_ds)
+        n = len(train_base_ds)
         val_ratio = float(train_cfg.get("val_ratio", 0.0))
         if val_ratio > 0.0 and n > 1:
             n_val = max(1, int(math.floor(n * val_ratio)))
@@ -36,12 +44,12 @@ class AvatarDataModule(L.LightningDataModule):
             train_idx = idx[n_val:]
             if len(train_idx) == 0:  # fallback to at least one train sample
                 train_idx, val_idx = idx[:-1], idx[-1:]
-            train_base = Subset(base_ds, train_idx)
-            val_base = Subset(base_ds, val_idx)
+            train_base = Subset(train_base_ds, train_idx)
+            val_base = Subset(eval_base_ds, val_idx)
             self.train_ds = ViewsChunkedDataset(train_base, chunk_size)
             self.val_ds = ViewsChunkedDataset(val_base, chunk_size)
         else:
-            self.train_ds = ViewsChunkedDataset(base_ds, chunk_size)
+            self.train_ds = ViewsChunkedDataset(train_base_ds, chunk_size)
             self.val_ds = None
 
     def train_dataloader(self) -> DataLoader:

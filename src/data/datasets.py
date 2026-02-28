@@ -1,4 +1,3 @@
-import os
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
@@ -41,7 +40,12 @@ class AvatarDataset(Dataset):
       - vertices3d: Optional[torch.FloatTensor] [N, 3]
     """
 
-    def __init__(self, root: str, transform: Optional[Any] = None):
+    def __init__(
+        self,
+        root: str,
+        transform: Optional[Any] = None,
+        enable_augmentation: bool = False,
+    ):
         # Config
         cfg = get_config()
         self.debug: bool = bool(cfg.get("sys", {}).get("debug", False))
@@ -51,6 +55,16 @@ class AvatarDataset(Dataset):
         self.target_h: int = int(image_size[1])
         self.root = Path(root)
         self.smplx_root = Path(cfg.get("data", {}).get("smplx_root", "data/THuman_2.0_smplx_params"))
+        self.enable_augmentation = bool(enable_augmentation)
+
+        aug_cfg = cfg.get("data", {}).get("augmentation", {})
+        self.aug_enabled = bool(aug_cfg.get("enabled", False)) and self.enable_augmentation
+        self.aug_prob = float(aug_cfg.get("prob", 0.8))
+        self.aug_brightness = float(aug_cfg.get("brightness", 0.15))
+        self.aug_contrast = float(aug_cfg.get("contrast", 0.15))
+        self.aug_saturation = float(aug_cfg.get("saturation", 0.1))
+        self.aug_gamma = float(aug_cfg.get("gamma", 0.1))
+        self.aug_noise_std = float(aug_cfg.get("noise_std", 0.005))
 
         # Index subjects and required views
         self._records: List[Dict[str, Any]] = []
@@ -72,19 +86,20 @@ class AvatarDataset(Dataset):
         view_names: List[str] = rec["view_names"]
 
         imgs_f: List[torch.Tensor] = []
-        imgs_u8: List[torch.Tensor] = []
         for p in view_paths:
             img = Image.open(p).convert("RGB")
             if img.size != (self.target_w, self.target_h):
                 img = img.resize((self.target_w, self.target_h), Image.BILINEAR)
             arr = np.asarray(img)
             f = torch.from_numpy(arr.astype(np.float32) / 255.0).permute(2, 0, 1)
-            u8 = torch.from_numpy(arr.astype(np.uint8)).permute(2, 0, 1)
             imgs_f.append(f)
-            imgs_u8.append(u8)
 
         images_float = torch.stack(imgs_f, dim=0)  # [V,C,H,W]
-        images_uint8 = torch.stack(imgs_u8, dim=0)  # [V,C,H,W]
+
+        if self.aug_enabled and torch.rand(1).item() < self.aug_prob:
+            images_float = self._apply_shared_augmentation(images_float)
+
+        images_uint8 = torch.clamp(images_float * 255.0, 0.0, 255.0).to(torch.uint8)
 
         # Load SMPLX 3D vertices from parameter file (standard vertex ordering)
         smplx_param_path = self.smplx_root / rec["subject"] / "smplx_param.pkl"
@@ -118,6 +133,34 @@ class AvatarDataset(Dataset):
             "vertices3d": vertices3d,
             "vertices2d": vertices2d,
         }
+
+    def _apply_shared_augmentation(self, images_float: torch.Tensor) -> torch.Tensor:
+        """Apply one photometric augmentation sample shared by all views."""
+        images = images_float
+
+        if self.aug_brightness > 0:
+            factor = 1.0 + (2.0 * torch.rand(1).item() - 1.0) * self.aug_brightness
+            images = images * factor
+
+        if self.aug_contrast > 0:
+            factor = 1.0 + (2.0 * torch.rand(1).item() - 1.0) * self.aug_contrast
+            mean = images.mean(dim=(2, 3), keepdim=True)
+            images = (images - mean) * factor + mean
+
+        if self.aug_saturation > 0:
+            factor = 1.0 + (2.0 * torch.rand(1).item() - 1.0) * self.aug_saturation
+            gray = (0.2989 * images[:, 0:1] + 0.5870 * images[:, 1:2] + 0.1140 * images[:, 2:3])
+            images = (images - gray) * factor + gray
+
+        if self.aug_gamma > 0:
+            gamma = 1.0 + (2.0 * torch.rand(1).item() - 1.0) * self.aug_gamma
+            images = torch.clamp(images, 0.0, 1.0) ** gamma
+
+        if self.aug_noise_std > 0:
+            noise = torch.randn_like(images) * self.aug_noise_std
+            images = images + noise
+
+        return torch.clamp(images, 0.0, 1.0)
 
     def _index_subjects(self) -> None:
         """Collect subjects with the required views present."""

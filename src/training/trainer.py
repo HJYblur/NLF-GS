@@ -194,18 +194,23 @@ class NlfGaussianModel(L.LightningModule):
         # Free combined inputs post-decoding
         del local_feats
         del z_id
-        del gaussian_3d
         # if stage == "train":
         #     self._log_gpu_mem("after_render")
 
         if rendered_imgs is not None:
             pred = rendered_imgs.permute(0, 3, 1, 2)  # (B, 3, H, W)
             gt = gt_images # .to(self.device)  # Move GT back to GPU for loss
-            loss_dict = self.loss_fn(pred, gt)
+            loss_dict = self.loss_fn(
+                pred,
+                gt,
+                gaussian_params=gaussian_params,
+                gaussian_3d=gaussian_3d,
+            )
         else:
             print("ERROROROROROROR SHOULD NEVER APPEAR!!!")
             loss_dict = self._proxy_regularization_loss(gaussian_params)
 
+        del gaussian_3d
         return loss_dict
 
     def freeze_encoder(self):
