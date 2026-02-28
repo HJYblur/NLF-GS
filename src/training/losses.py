@@ -1,28 +1,165 @@
 import torch
 import torch.nn as nn
-from torchmetrics.image import StructuralSimilarityIndexMeasure
+import torch.nn.functional as F
 from avatar_utils.config import load_config
+
 
 class LossFunctions(nn.Module):
     def __init__(self, weight_rgb=None):
         super().__init__()
-        self.weight_rgb = weight_rgb if weight_rgb is not None else float(load_config().get("train", {}).get("weight_rgb", 1.0))
-        self.ssim = StructuralSimilarityIndexMeasure(data_range=1.0)
+        train_cfg = load_config().get("train", {})
+        self.weight_rgb = (
+            weight_rgb if weight_rgb is not None else float(train_cfg.get("weight_rgb", 1.0))
+        )
+        self.weight_l1 = float(train_cfg.get("weight_l1", 0.8))
+        self.weight_masked_ssim = float(train_cfg.get("weight_masked_ssim", 0.2))
+        self.weight_perceptual = float(train_cfg.get("weight_perceptual", 0.0))
+        self.weight_scale_reg = float(train_cfg.get("weight_scale_reg", 0.0))
+        self.weight_opacity_reg = float(train_cfg.get("weight_opacity_reg", 0.0))
+        self.weight_multiview_consistency = float(
+            train_cfg.get("weight_multiview_consistency", 0.0)
+        )
 
-    def rgb_loss(self, pred_imgs, gt_imgs):
-        mask = (gt_imgs.abs().sum(dim=1) > 0.0)
-        pred_imgs_masked = pred_imgs.permute(0, 2, 3, 1)[mask]
-        gt_imgs_masked = gt_imgs.permute(0, 2, 3, 1)[mask]
-        
-        l1_loss = nn.functional.l1_loss(pred_imgs_masked, gt_imgs_masked)
-        # TODO: Also a masked version fo ssim?
-        ssim_val = self.ssim(pred_imgs, gt_imgs)
-        
-        return l1_loss, ssim_val
+    def _foreground_mask(self, gt_imgs: torch.Tensor) -> torch.Tensor:
+        """Return foreground mask from non-black GT pixels, shape [B,1,H,W]."""
+        return (gt_imgs.abs().sum(dim=1, keepdim=True) > 0.0).float()
 
-    def forward(self, pred_imgs, gt_imgs):
-        # TODO: Add more loss components (e.g., regularization on Gaussian parameters) and corresponding weights from config
-        l1_loss, ssim_val = self.rgb_loss(pred_imgs, gt_imgs)
-        final_loss = self.weight_rgb * (0.8 * l1_loss + 0.2 * (1 - ssim_val))
-        
-        return {"loss": final_loss, "l1": l1_loss, "ssim": ssim_val}
+    def _masked_l1(self, pred_imgs: torch.Tensor, gt_imgs: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
+        mask3 = mask.expand_as(pred_imgs)
+        valid = mask3.sum()
+        if valid <= 0:
+            return torch.zeros((), device=pred_imgs.device)
+        return (pred_imgs - gt_imgs).abs().mul(mask3).sum() / valid
+
+    def _masked_ssim(
+        self,
+        pred_imgs: torch.Tensor,
+        gt_imgs: torch.Tensor,
+        mask: torch.Tensor,
+        kernel_size: int = 11,
+    ) -> torch.Tensor:
+        """Compute mask-weighted SSIM using a local-window SSIM map."""
+        c1 = 0.01 ** 2
+        c2 = 0.03 ** 2
+        pad = kernel_size // 2
+
+        mu_x = F.avg_pool2d(pred_imgs, kernel_size, stride=1, padding=pad)
+        mu_y = F.avg_pool2d(gt_imgs, kernel_size, stride=1, padding=pad)
+
+        sigma_x = (
+            F.avg_pool2d(pred_imgs * pred_imgs, kernel_size, stride=1, padding=pad)
+            - mu_x * mu_x
+        )
+        sigma_y = (
+            F.avg_pool2d(gt_imgs * gt_imgs, kernel_size, stride=1, padding=pad)
+            - mu_y * mu_y
+        )
+        sigma_xy = (
+            F.avg_pool2d(pred_imgs * gt_imgs, kernel_size, stride=1, padding=pad)
+            - mu_x * mu_y
+        )
+
+        ssim_map = ((2.0 * mu_x * mu_y + c1) * (2.0 * sigma_xy + c2)) / (
+            (mu_x * mu_x + mu_y * mu_y + c1) * (sigma_x + sigma_y + c2) + 1e-8
+        )
+        ssim_map = ssim_map.mean(dim=1, keepdim=True)
+
+        masked_sum = (ssim_map * mask).sum()
+        valid = mask.sum()
+        if valid <= 0:
+            return ssim_map.mean()
+        return masked_sum / valid
+
+    def _masked_multiscale_perceptual(
+        self,
+        pred_imgs: torch.Tensor,
+        gt_imgs: torch.Tensor,
+        mask: torch.Tensor,
+        scales=(1, 2, 4),
+    ) -> torch.Tensor:
+        """Lightweight perceptual loss via masked multi-scale image + gradient differences."""
+        loss = torch.zeros((), device=pred_imgs.device)
+        for s in scales:
+            if s > 1:
+                pred_s = F.avg_pool2d(pred_imgs, s, s)
+                gt_s = F.avg_pool2d(gt_imgs, s, s)
+                mask_s = F.avg_pool2d(mask, s, s)
+                mask_s = (mask_s > 0.5).float()
+            else:
+                pred_s, gt_s, mask_s = pred_imgs, gt_imgs, mask
+
+            # Intensity difference
+            l_int = self._masked_l1(pred_s, gt_s, mask_s)
+
+            # Edge/structure difference (Sobel-like finite differences)
+            pred_dx = pred_s[:, :, :, 1:] - pred_s[:, :, :, :-1]
+            gt_dx = gt_s[:, :, :, 1:] - gt_s[:, :, :, :-1]
+            mask_dx = mask_s[:, :, :, 1:] * mask_s[:, :, :, :-1]
+            l_dx = self._masked_l1(pred_dx, gt_dx, mask_dx)
+
+            pred_dy = pred_s[:, :, 1:, :] - pred_s[:, :, :-1, :]
+            gt_dy = gt_s[:, :, 1:, :] - gt_s[:, :, :-1, :]
+            mask_dy = mask_s[:, :, 1:, :] * mask_s[:, :, :-1, :]
+            l_dy = self._masked_l1(pred_dy, gt_dy, mask_dy)
+
+            loss = loss + l_int + 0.5 * (l_dx + l_dy)
+
+        return loss / float(len(scales))
+
+    def regularization_loss(self, gaussian_params, device):
+        if gaussian_params is None:
+            zero = torch.zeros((), device=device)
+            return zero, zero
+        scales = gaussian_params.get("scales", None)
+        alpha = gaussian_params.get("alpha", None)
+        scale_reg = scales.mean() if scales is not None else torch.zeros((), device=device)
+        opacity_reg = alpha.mean() if alpha is not None else torch.zeros((), device=device)
+        return scale_reg, opacity_reg
+
+    def multiview_consistency_loss(self, gaussian_3d, device):
+        """Penalize disagreement of per-view Gaussian 3D positions.
+
+        gaussian_3d expected shape: [V, N, 3].
+        """
+        if gaussian_3d is None:
+            return torch.zeros((), device=device)
+        if gaussian_3d.ndim != 3 or gaussian_3d.shape[0] <= 1:
+            return torch.zeros((), device=device)
+        return gaussian_3d.var(dim=0, unbiased=False).mean()
+
+    def forward(self, pred_imgs, gt_imgs, gaussian_params=None, gaussian_3d=None):
+        fg_mask = self._foreground_mask(gt_imgs)
+
+        l1_loss = self._masked_l1(pred_imgs, gt_imgs, fg_mask)
+        masked_ssim_val = self._masked_ssim(pred_imgs, gt_imgs, fg_mask)
+        perceptual_loss = self._masked_multiscale_perceptual(pred_imgs, gt_imgs, fg_mask)
+
+        # scale_reg, opacity_reg = self.regularization_loss(
+        #     gaussian_params, device=pred_imgs.device
+        # )
+        # multiview_consistency = self.multiview_consistency_loss(
+        #     gaussian_3d, device=pred_imgs.device
+        # )
+
+        photometric = (
+            self.weight_l1 * l1_loss
+            + self.weight_masked_ssim * (1 - masked_ssim_val)
+            + self.weight_perceptual * perceptual_loss
+        )
+        final_loss = photometric
+        # (
+        #     self.weight_rgb * photometric
+        #     + self.weight_scale_reg * scale_reg
+        #     + self.weight_opacity_reg * opacity_reg
+        #     + self.weight_multiview_consistency * multiview_consistency
+        # )
+
+        return {
+            "loss": final_loss,
+            "l1": l1_loss,
+            "masked_ssim": masked_ssim_val,
+            "perceptual": perceptual_loss,
+            # "scale_reg": scale_reg,
+            # "opacity_reg": opacity_reg,
+            # "multiview_consistency": multiview_consistency,
+        }
