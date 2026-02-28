@@ -187,15 +187,16 @@ class NlfGaussianModel(L.LightningModule):
             view_name=view_names,
             save_folder_path=save_path,
         )  # (V, H, W, 3)
-        if not rendered_imgs.requires_grad:
-            # Renderer returned a non-differentiable tensor; fall back to proxy loss
+        
+        # Updated condition for proxy loss, we should use real loss for validation as well.
+        if stage == "train" and torch.is_grad_enabled() and not rendered_imgs.requires_grad:
+            # Renderer returned a non-differentiable tensor while gradients are expected;
+            # fall back to proxy loss to keep optimization stable.
             rendered_imgs = None
 
         # Free combined inputs post-decoding
         del local_feats
         del z_id
-        # if stage == "train":
-        #     self._log_gpu_mem("after_render")
 
         if rendered_imgs is not None:
             pred = rendered_imgs.permute(0, 3, 1, 2)  # (B, 3, H, W)
