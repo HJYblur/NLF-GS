@@ -84,7 +84,7 @@ class SynchronizedPhotometricAugmentation:
         out = out.clamp(0.0, 1.0)
 
         jpeg_applied = False
-        jpeg_quality = None
+        jpeg_quality = -1
         if self.jpeg_prob > 0 and torch.rand(1).item() < self.jpeg_prob:
             jpeg_applied = True
             jpeg_quality = int(
