@@ -349,6 +349,28 @@ class NlfGaussianModel(L.LightningModule):
 
         return img_float, img_uint8, (B, H, W), subject, view_names, vertices3d, vertices2d, augmentation_info
 
+    @staticmethod
+    def _to_json_safe(value: Any) -> Any:
+        if isinstance(value, dict):
+            return {str(k): NlfGaussianModel._to_json_safe(v) for k, v in value.items()}
+        if isinstance(value, (list, tuple)):
+            return [NlfGaussianModel._to_json_safe(v) for v in value]
+        if isinstance(value, torch.Tensor):
+            if value.numel() == 1:
+                return value.item()
+            return value.detach().cpu().tolist()
+        try:
+            import numpy as _np
+            if isinstance(value, (_np.generic,)):
+                return value.item()
+            if isinstance(value, _np.ndarray):
+                return value.tolist()
+        except Exception:
+            pass
+        if isinstance(value, Path):
+            return str(value)
+        return value
+
     def _maybe_save_augmented_inputs(
         self,
         subject: Any,
@@ -378,8 +400,8 @@ class NlfGaussianModel(L.LightningModule):
 
         payload = {
             "subject": subject_str,
-            "view_names": names,
-            "augmentation": augmentation_info if isinstance(augmentation_info, dict) else {},
+            "view_names": self._to_json_safe(names),
+            "augmentation": self._to_json_safe(augmentation_info if isinstance(augmentation_info, dict) else {}),
         }
         with open(out_dir / "augmentation_info.json", "w", encoding="utf-8") as f:
             json.dump(payload, f, indent=2, sort_keys=True)
