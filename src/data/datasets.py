@@ -84,8 +84,9 @@ class AvatarDataset(Dataset):
 
         images_float = torch.stack(imgs_f, dim=0)  # [V,C,H,W]
 
+        augmentation_info: Dict[str, Any] = {"enabled": False}
         if self.apply_augmentation:
-            images_float = self.augmentation(images_float)
+            images_float, augmentation_info = self.augmentation.apply_with_info(images_float)
 
         images_uint8 = (images_float.clamp(0.0, 1.0) * 255.0).round().to(torch.uint8)  # [V,C,H,W]
 
@@ -120,6 +121,7 @@ class AvatarDataset(Dataset):
             "view_names": view_names,
             "vertices3d": vertices3d,
             "vertices2d": vertices2d,
+            "augmentation_info": augmentation_info,
         }
 
     def _index_subjects(self) -> None:
@@ -199,4 +201,6 @@ class ViewsChunkedDataset(Dataset):
             out["vertices3d"] = sample["vertices3d"]
         if "vertices2d" in sample:
             out["vertices2d"] = sample["vertices2d"][start:end]
+        if "augmentation_info" in sample:
+            out["augmentation_info"] = sample["augmentation_info"]
         return out

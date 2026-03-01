@@ -1,6 +1,6 @@
 from dataclasses import dataclass
 from io import BytesIO
-from typing import Dict, Any
+from typing import Dict, Any, Tuple
 
 import numpy as np
 import torch
@@ -41,44 +41,60 @@ class SynchronizedPhotometricAugmentation:
 
     def __call__(self, images: torch.Tensor) -> torch.Tensor:
         """Apply augmentation to [V,C,H,W] tensor in [0,1]."""
+        out, _ = self.apply_with_info(images)
+        return out
+
+    def apply_with_info(self, images: torch.Tensor) -> Tuple[torch.Tensor, Dict[str, Any]]:
+        """Apply augmentation and return both image tensor and sampled parameters."""
+        info: Dict[str, Any] = {"enabled": bool(self.enabled)}
         if (not self.enabled) or images.ndim != 4:
-            return images
+            return images, info
 
         out = images.clone()
 
         # Shared parameters across all views.
         b = self._sample_factor(self.brightness)
         c = self._sample_factor(self.contrast)
-        s = self._sample_factor(self.saturation)
+        sat = self._sample_factor(self.saturation)
         g = self._sample_gamma(self.gamma)
+        info.update({"brightness_factor": b, "contrast_factor": c, "saturation_factor": sat, "gamma_factor": g})
 
         out = out * b
         out = (out - 0.5) * c + 0.5
 
         gray = out.mean(dim=1, keepdim=True)
-        out = gray + s * (out - gray)
+        out = gray + sat * (out - gray)
 
         out = out.clamp(0.0, 1.0)
         out = out.pow(g)
 
+        sigma = 0.0
         if self.noise_std > 0:
             sigma = float(torch.rand(1).item()) * self.noise_std
             if sigma > 0:
                 noise = torch.randn_like(out[:1]) * sigma
                 out = out + noise
+        info["noise_sigma"] = sigma
 
-        if self.blur_prob > 0 and torch.rand(1).item() < self.blur_prob:
+        blur_applied = bool(self.blur_prob > 0 and torch.rand(1).item() < self.blur_prob)
+        if blur_applied:
             out = F.avg_pool2d(out, kernel_size=3, stride=1, padding=1)
+        info["blur_applied"] = blur_applied
 
         out = out.clamp(0.0, 1.0)
 
+        jpeg_applied = False
+        jpeg_quality = None
         if self.jpeg_prob > 0 and torch.rand(1).item() < self.jpeg_prob:
-            quality = int(
+            jpeg_applied = True
+            jpeg_quality = int(
                 torch.randint(self.jpeg_quality_min, self.jpeg_quality_max + 1, (1,)).item()
             )
-            out = self._apply_jpeg(out, quality)
+            out = self._apply_jpeg(out, jpeg_quality)
+        info["jpeg_applied"] = jpeg_applied
+        info["jpeg_quality"] = jpeg_quality
 
-        return out.clamp(0.0, 1.0)
+        return out.clamp(0.0, 1.0), info
 
     @staticmethod
     def _sample_factor(amount: float) -> float:

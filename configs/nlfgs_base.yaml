@@ -20,6 +20,8 @@ data:
     jpeg_prob: 0.2
     jpeg_quality_min: 75
     jpeg_quality_max: 95
+    save_preview: True
+    save_once_per_subject: True
 
 camera:
   image_size: [512, 512]  # [W, H]

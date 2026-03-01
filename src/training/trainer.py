@@ -1,5 +1,6 @@
 from typing import Any, Dict, Optional
 from contextlib import nullcontext
+import json
 import logging
 from pathlib import Path
 import os
@@ -35,6 +36,10 @@ class NlfGaussianModel(L.LightningModule):
             get_config().get("identity_encoder", {}).get("use_flag", True)
         )
         self.num_views = int(get_config().get("data", {}).get("num_views", 1))
+        aug_cfg = get_config().get("data", {}).get("augmentation", {})
+        self._save_augmented_inputs = bool(aug_cfg.get("save_preview", False))
+        self._save_augmented_once_per_subject = bool(aug_cfg.get("save_once_per_subject", True))
+        self._saved_augmented_subjects = set()
         self.template = AvatarTemplate()
         self.backbone = backbone_adapter
         self.avatar_estimator = AvatarGaussianEstimator(self.template)
@@ -83,9 +88,10 @@ class NlfGaussianModel(L.LightningModule):
 
     def shared_step(self, batch: Dict[str, Any], batch_idx: int, stage: str) -> torch.Tensor:
         # Extract data from batch
-        img_float, img_uint8, (B, H, W), subject, view_names, vertices3d, vertices2d = self.process_input(batch)
+        img_float, img_uint8, (B, H, W), subject, view_names, vertices3d, vertices2d, augmentation_info = self.process_input(batch)
         if stage == "train":
             self._logger.info(f"Processing subject: {subject}, views: {view_names}")
+            self._maybe_save_augmented_inputs(subject, view_names, img_float, augmentation_info)
 
         grad_ctx = torch.inference_mode() if self.train_decoder_only else nullcontext()
         with grad_ctx:
@@ -273,6 +279,8 @@ class NlfGaussianModel(L.LightningModule):
             SMPLX 3D vertices, shape (Nv, 3) on self.device. Empty (0,3) if unavailable.
         vertices2d : torch.Tensor
             SMPLX 2D projections per view, shape (B, Nv, 2) on self.device. Empty (B,0,2) if unavailable.
+        augmentation_info : Dict[str, Any]
+            Metadata describing sampled augmentations (if enabled by dataset).
         """
         assert (
             "images_float" in batch and "images_uint8" in batch
@@ -335,7 +343,49 @@ class NlfGaussianModel(L.LightningModule):
         else:
             vertices2d = torch.empty(B, 0, 2) #, dtype=torch.float32, device=self.device)
 
-        return img_float, img_uint8, (B, H, W), subject, view_names, vertices3d, vertices2d
+        augmentation_info = batch.get("augmentation_info", {})
+        if isinstance(augmentation_info, (list, tuple)) and len(augmentation_info) == 1 and isinstance(augmentation_info[0], dict):
+            augmentation_info = augmentation_info[0]
+
+        return img_float, img_uint8, (B, H, W), subject, view_names, vertices3d, vertices2d, augmentation_info
+
+    def _maybe_save_augmented_inputs(
+        self,
+        subject: Any,
+        view_names: Any,
+        images_float: torch.Tensor,
+        augmentation_info: Dict[str, Any],
+    ) -> None:
+        if not self._save_augmented_inputs:
+            return
+
+        subject_str = str(subject)
+        if self._save_augmented_once_per_subject and subject_str in self._saved_augmented_subjects:
+            return
+
+        output_root = Path(get_config().get("render", {}).get("save_path", "output"))
+        out_dir = output_root / "augmented_inputs" / subject_str
+        out_dir.mkdir(parents=True, exist_ok=True)
+
+        names = view_names if isinstance(view_names, list) else []
+        for i in range(images_float.shape[0]):
+            vn = names[i] if i < len(names) else f"view{i}"
+            arr = (
+                images_float[i].detach().cpu().clamp(0.0, 1.0).permute(1, 2, 0).numpy() * 255.0
+            ).round().astype("uint8")
+            from PIL import Image
+            Image.fromarray(arr, mode="RGB").save(out_dir / f"{subject_str}_{vn}_aug.png")
+
+        payload = {
+            "subject": subject_str,
+            "view_names": names,
+            "augmentation": augmentation_info if isinstance(augmentation_info, dict) else {},
+        }
+        with open(out_dir / "augmentation_info.json", "w", encoding="utf-8") as f:
+            json.dump(payload, f, indent=2, sort_keys=True)
+
+        self._saved_augmented_subjects.add(subject_str)
+        self._logger.info(f"Saved augmented input previews to {out_dir}")
 
     def load_debug_feats(self, img_float, img_uint8):
         feats_path = "debug_backbone_features.pt"
