@@ -9,6 +9,19 @@ data:
   num_views: 4
   template_path: models/avatar_template.ply
   image_size: [512, 512]  # [W, H]
+  augmentation:
+    enabled: True
+    brightness: 0.1
+    contrast: 0.1
+    saturation: 0.1
+    gamma: 0.08
+    noise_std: 0.01
+    blur_prob: 0.2
+    jpeg_prob: 0.2
+    jpeg_quality_min: 75
+    jpeg_quality_max: 95
+    save_preview: True
+    save_once_per_subject: True
 
 camera:
   image_size: [512, 512]  # [W, H]
