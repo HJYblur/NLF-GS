@@ -91,7 +91,8 @@ class NlfGaussianModel(L.LightningModule):
         img_float, img_uint8, (B, H, W), subject, view_names, vertices3d, vertices2d, augmentation_info = self.process_input(batch)
         if stage == "train":
             self._logger.info(f"Processing subject: {subject}, views: {view_names}")
-            self._maybe_save_augmented_inputs(subject, view_names, img_float, augmentation_info)
+            if self._is_test_render_batch(batch_idx):
+                self._maybe_save_augmented_inputs(subject, view_names, img_float, augmentation_info)
 
         grad_ctx = torch.inference_mode() if self.train_decoder_only else nullcontext()
         with grad_ctx:
@@ -179,14 +180,10 @@ class NlfGaussianModel(L.LightningModule):
                 output_path=f"output/{subject}/{subject}_debug.ply",
             )
 
-        num_train_batches = len(self.trainer.datamodule.train_dataloader())
-        test_renders = set(
-            torch.linspace(0, num_train_batches - 1, steps=10, dtype=torch.long).tolist()
-        )
         save_path = (
             Path(get_config().get("render", {}).get("save_path", "output"))
             / subject
-        ) if int(subject) in test_renders else None
+        ) if self._is_test_render_batch(batch_idx) else None
         rendered_imgs = self.renderer.render(
             gaussian_3d=gaussian_3d[0],
             gaussian_params=gaussian_params,
@@ -348,6 +345,21 @@ class NlfGaussianModel(L.LightningModule):
             augmentation_info = augmentation_info[0]
 
         return img_float, img_uint8, (B, H, W), subject, view_names, vertices3d, vertices2d, augmentation_info
+
+    def _is_test_render_batch(self, batch_idx: int) -> bool:
+        try:
+            num_train_batches = len(self.trainer.datamodule.train_dataloader())
+            if num_train_batches <= 0:
+                return False
+            if num_train_batches == 1:
+                return batch_idx == 0
+            n_samples = min(10, num_train_batches)
+            test_renders = set(
+                torch.linspace(0, num_train_batches - 1, steps=n_samples, dtype=torch.long).tolist()
+            )
+            return int(batch_idx) in test_renders
+        except Exception:
+            return False
 
     @staticmethod
     def _to_json_safe(value: Any) -> Any:
