@@ -117,7 +117,9 @@ class SynchronizedPhotometricAugmentation:
     def _sample_factor(amount: float, generator=None) -> float:
         if amount <= 0:
             return 1.0
-        return float(torch.empty(1, generator=generator).uniform_(1.0 - amount, 1.0 + amount).item())
+        lo = 1.0 - amount
+        hi = 1.0 + amount
+        return float((lo + (hi - lo) * torch.rand(1, generator=generator)).item())
 
     @staticmethod
     def _sample_gamma(amount: float, generator=None) -> float:
@@ -125,7 +127,7 @@ class SynchronizedPhotometricAugmentation:
             return 1.0
         lo = max(0.1, 1.0 - amount)
         hi = 1.0 + amount
-        return float(torch.empty(1, generator=generator).uniform_(lo, hi).item())
+        return float((lo + (hi - lo) * torch.rand(1, generator=generator)).item())
 
     @staticmethod
     def _apply_jpeg(images: torch.Tensor, quality: int) -> torch.Tensor:
