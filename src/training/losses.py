@@ -133,18 +133,18 @@ class LossFunctions(nn.Module):
         return gaussian_3d.var(dim=0, unbiased=False).mean()
 
     def forward(self, pred_imgs, gt_imgs, gt_masks, gaussian_params=None, gaussian_3d=None):
-        pred_masks = self._foreground_mask(gt_imgs)
+        fg_mask = self._foreground_mask(gt_imgs)
 
-        # l1_loss = self._masked_l1(pred_imgs, gt_imgs, pred_masks)
-        l2_loss = self._masked_l2(pred_imgs, gt_imgs, pred_masks)
-        # masked_ssim_val = self._masked_ssim(pred_imgs, gt_imgs, pred_masks)
-        # perceptual_loss = self._masked_multiscale_perceptual(pred_imgs, gt_imgs, pred_masks)
+        # l1_loss = self._masked_l1(pred_imgs, gt_imgs, fg_mask)
+        l2_loss = self._masked_l2(pred_imgs, gt_imgs, fg_mask)
+        # masked_ssim_val = self._masked_ssim(pred_imgs, gt_imgs, fg_mask)
+        # perceptual_loss = self._masked_multiscale_perceptual(pred_imgs, gt_imgs, fg_mask)
 
-        # Silhouette loss comparing rendered silhouette with GT mask
+        # Silhouette loss: extract predicted mask from rendered images
+        sil_loss = torch.zeros((), device=pred_imgs.device)
         if self.weight_silhouette > 0 and gt_masks is not None:
-            sil_loss = self.silhouette_loss(pred_masks, gt_masks)
-        else:
-            sil_loss = torch.zeros((), device=pred_imgs.device)
+            pred_sil = self._foreground_mask(pred_imgs)  # Extract from PREDICTED images
+            sil_loss = self.silhouette_loss(pred_sil, gt_masks)
 
         # scale_reg, opacity_reg = self.regularization_loss(
         #     gaussian_params, device=pred_imgs.device
