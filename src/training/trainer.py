@@ -88,7 +88,7 @@ class NlfGaussianModel(L.LightningModule):
 
     def shared_step(self, batch: Dict[str, Any], batch_idx: int, stage: str) -> torch.Tensor:
         # Extract data from batch
-        img_float, img_uint8, (B, H, W), subject, view_names, vertices3d, vertices2d, augmentation_info = self.process_input(batch)
+        img_float, img_uint8, masks_float, (B, H, W), subject, view_names, vertices3d, vertices2d, augmentation_info = self.process_input(batch)
         if stage == "train":
             self._logger.info(f"Processing subject: {subject}, views: {view_names}")
             if self._is_test_render_batch(subject):
@@ -215,6 +215,7 @@ class NlfGaussianModel(L.LightningModule):
             loss_dict = self.loss_fn(
                 pred,
                 gt,
+                masks_float,
                 gaussian_params=gaussian_params,
                 gaussian_3d=gaussian_3d,
             )
@@ -265,6 +266,7 @@ class NlfGaussianModel(L.LightningModule):
         Batch : Dict[str, Any]
             "images_float": images_float,
             "images_uint8": images_uint8,
+            "masks_float": masks_float,
             "subject": str,
             "view_names": List[str]
             "vertices3d": Optional[torch.FloatTensor] [Nv, 3]
@@ -276,6 +278,8 @@ class NlfGaussianModel(L.LightningModule):
             Float image tensor used for feature extraction, shape (B,C,H,W) on self.device.
         img_uint8 : torch.Tensor
             The original uint8 image used by the detector, shape (B,C,H,W) on self.device.
+        masks_float : torch.Tensor
+            Float mask tensor, shape (B,1,H,W) on self.device.
         (B, H, W) : tuple[int,int,int]
             Spatial dims extracted from `img_float`.
         subject : str
@@ -300,6 +304,16 @@ class NlfGaussianModel(L.LightningModule):
         img_uint8 = batch["images_uint8"]
         if img_uint8.ndim == 5 and img_uint8.shape[0] == 1:
             img_uint8 = img_uint8[0]
+
+        # Extract masks
+        masks_float = batch.get("masks_float", None)
+        if masks_float is not None:
+            if masks_float.ndim == 5 and masks_float.shape[0] == 1:
+                masks_float = masks_float[0]
+        else:
+            # If masks are not in batch, return None and let the loss function handle it
+            B, _, H, W = img_float.shape
+            masks_float = None
 
         # # Only move uint8 images to GPU when needed (debug mode); saves ~48 MB
         # debug = bool(get_config().get("sys", {}).get("debug", False))
@@ -352,7 +366,7 @@ class NlfGaussianModel(L.LightningModule):
         if isinstance(augmentation_info, (list, tuple)) and len(augmentation_info) == 1 and isinstance(augmentation_info[0], dict):
             augmentation_info = augmentation_info[0]
 
-        return img_float, img_uint8, (B, H, W), subject, view_names, vertices3d, vertices2d, augmentation_info
+        return img_float, img_uint8, masks_float, (B, H, W), subject, view_names, vertices3d, vertices2d, augmentation_info
 
     def _is_test_render_batch(self, subject: str) -> bool:
         test_renders = [0, 7, 50, 100, 200, 350]

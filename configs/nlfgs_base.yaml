@@ -81,8 +81,10 @@ train:
   # Loss weights
   weight_rgb: 1.0
   weight_l1: 0.8
+  weight_l2: 1.0
   weight_masked_ssim: 0.2
   weight_perceptual: 0.0
   weight_scale_reg: 0.0
   weight_opacity_reg: 0.0
+  weight_silhouette: 0.0  # Silhouette loss: penalizes mismatch between rendered and GT mask
   weight_multiview_consistency: 0.0

@@ -16,6 +16,7 @@ class LossFunctions(nn.Module):
         self.weight_perceptual = float(train_cfg.get("weight_perceptual", 0.0))
         self.weight_scale_reg = float(train_cfg.get("weight_scale_reg", 0.0))
         self.weight_opacity_reg = float(train_cfg.get("weight_opacity_reg", 0.0))
+        self.weight_silhouette = float(train_cfg.get("weight_silhouette", 0.0))
         self.weight_multiview_consistency = float(
             train_cfg.get("weight_multiview_consistency", 0.0)
         )
@@ -69,6 +70,10 @@ class LossFunctions(nn.Module):
         if valid <= 0:
             return ssim_map.mean()
         return masked_sum / valid
+    
+    def silhouette_loss(self, pred_masks: torch.Tensor, gt_masks: torch.Tensor) -> torch.Tensor:
+        """L2 loss comparing predicted silhouette with ground truth mask."""
+        return F.mse_loss(pred_masks, gt_masks)
 
     def _masked_multiscale_perceptual(
         self,
@@ -127,13 +132,19 @@ class LossFunctions(nn.Module):
             return torch.zeros((), device=device)
         return gaussian_3d.var(dim=0, unbiased=False).mean()
 
-    def forward(self, pred_imgs, gt_imgs, gaussian_params=None, gaussian_3d=None):
-        fg_mask = self._foreground_mask(gt_imgs)
+    def forward(self, pred_imgs, gt_imgs, gt_masks, gaussian_params=None, gaussian_3d=None):
+        pred_masks = self._foreground_mask(gt_imgs)
 
-        # l1_loss = self._masked_l1(pred_imgs, gt_imgs, fg_mask)
-        l2_loss = self._masked_l2(pred_imgs, gt_imgs, fg_mask)
-        # masked_ssim_val = self._masked_ssim(pred_imgs, gt_imgs, fg_mask)
-        # perceptual_loss = self._masked_multiscale_perceptual(pred_imgs, gt_imgs, fg_mask)
+        # l1_loss = self._masked_l1(pred_imgs, gt_imgs, pred_masks)
+        l2_loss = self._masked_l2(pred_imgs, gt_imgs, pred_masks)
+        # masked_ssim_val = self._masked_ssim(pred_imgs, gt_imgs, pred_masks)
+        # perceptual_loss = self._masked_multiscale_perceptual(pred_imgs, gt_imgs, pred_masks)
+
+        # Silhouette loss comparing rendered silhouette with GT mask
+        if self.weight_silhouette > 0 and gt_masks is not None:
+            sil_loss = self.silhouette_loss(pred_masks, gt_masks)
+        else:
+            sil_loss = torch.zeros((), device=pred_imgs.device)
 
         # scale_reg, opacity_reg = self.regularization_loss(
         #     gaussian_params, device=pred_imgs.device
@@ -148,7 +159,7 @@ class LossFunctions(nn.Module):
             # + self.weight_masked_ssim * (1 - masked_ssim_val)
             # + self.weight_perceptual * perceptual_loss
         )
-        final_loss = photometric
+        final_loss = photometric + self.weight_silhouette * sil_loss
         # (
         #     self.weight_rgb * photometric
         #     + self.weight_scale_reg * scale_reg
@@ -160,6 +171,7 @@ class LossFunctions(nn.Module):
             "loss": final_loss,
             # "l1": l1_loss,
             "l2": l2_loss,
+            "silhouette": sil_loss,
             # "masked_ssim": masked_ssim_val,
             # "perceptual": perceptual_loss,
             # "scale_reg": scale_reg,

@@ -90,6 +90,7 @@ train:
   weight_perceptual: 0.3
   weight_scale_reg: 0.01
   weight_opacity_reg: 0.05
+  weight_silhouette: 0.1  # Silhouette loss: penalizes mismatch between rendered and GT mask
   weight_multiview_consistency: 0.0
   
   # GPU memory profiling (logs peak VRAM per section)

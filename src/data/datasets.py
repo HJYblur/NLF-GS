@@ -22,9 +22,13 @@ class AvatarDataset(Dataset):
         Layout per subject (new naming):
             processed/<subject>/
                 <subject>_front.(png|jpg|jpeg)
+                <subject>_front_mask.(png|jpg|jpeg)
                 <subject>_back.(png|jpg|jpeg)
+                <subject>_back_mask.(png|jpg|jpeg)
                 <subject>_left.(png|jpg|jpeg)
+                <subject>_left_mask.(png|jpg|jpeg)
                 <subject>_right.(png|jpg|jpeg)
+                <subject>_right_mask.(png|jpg|jpeg)
                 
         Layout per smplx_param:
             data/THuman_2.0_smplx_params/<subject>/mesh_smplx.obj
@@ -36,6 +40,7 @@ class AvatarDataset(Dataset):
     Outputs per sample:
       - images_float: torch.FloatTensor [V, C, H, W], normalized to [0,1]
       - images_uint8: torch.Uint8Tensor [V, C, H, W]
+      - masks_float: torch.FloatTensor [V, 1, H, W], normalized to [0,1]
       - subject: str
       - view_names: List[str]
       - vertices3d: Optional[torch.FloatTensor] [N, 3]
@@ -74,6 +79,7 @@ class AvatarDataset(Dataset):
         view_names: List[str] = rec["view_names"]
 
         imgs_f: List[torch.Tensor] = []
+        masks_f: List[torch.Tensor] = []
         for p in view_paths:
             img = Image.open(p).convert("RGB")
             if img.size != (self.target_w, self.target_h):
@@ -81,8 +87,22 @@ class AvatarDataset(Dataset):
             arr = np.asarray(img)
             f = torch.from_numpy(arr.astype(np.float32) / 255.0).permute(2, 0, 1)
             imgs_f.append(f)
+            
+            # Load corresponding mask image
+            mask_path = p.parent / f"{p.stem}_mask{p.suffix}"
+            if mask_path.exists():
+                mask_img = Image.open(mask_path).convert("L")  # Load as grayscale
+                if mask_img.size != (self.target_w, self.target_h):
+                    mask_img = mask_img.resize((self.target_w, self.target_h), Image.BILINEAR)
+                mask_arr = np.asarray(mask_img)
+                mask_f = torch.from_numpy(mask_arr.astype(np.float32) / 255.0).unsqueeze(0)  # [1,H,W]
+            else:
+                # If mask doesn't exist, create an all-ones mask
+                mask_f = torch.ones(1, self.target_h, self.target_w, dtype=torch.float32)
+            masks_f.append(mask_f)
 
         images_float = torch.stack(imgs_f, dim=0)  # [V,C,H,W]
+        masks_float = torch.stack(masks_f, dim=0)  # [V,1,H,W]
 
         augmentation_info: Dict[str, Any] = {"enabled": False}
         if self.apply_augmentation:
@@ -117,6 +137,7 @@ class AvatarDataset(Dataset):
         return {
             "images_float": images_float,
             "images_uint8": images_uint8,
+            "masks_float": masks_float,
             "subject": rec["subject"],
             "view_names": view_names,
             "vertices3d": vertices3d,
@@ -195,6 +216,8 @@ class ViewsChunkedDataset(Dataset):
             "images_uint8": sample["images_uint8"][start:end],
             "subject": sample.get("subject", ""),
         }
+        if "masks_float" in sample:
+            out["masks_float"] = sample["masks_float"][start:end]
         if "view_names" in sample:
             out["view_names"] = sample["view_names"][start:end]
         if "vertices3d" in sample:
