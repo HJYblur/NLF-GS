@@ -69,7 +69,7 @@ train:
   # Base settings
   accelerator: cuda
   precision: 16-mixed          # Use AMP (fp16) to halve VRAM on activations & weights
-  batch_size: 4                # Must match num_views (4 views fused per subject)
+  subjects_per_batch: 2        # Number of subjects per batch (each subject has num_views=4 views)
   num_workers: 2
   epochs: 100
   val_ratio: 0.2

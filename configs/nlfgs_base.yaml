@@ -65,7 +65,7 @@ decoder:
 
 train:
   accelerator: cpu
-  batch_size: 4
+  subjects_per_batch: 1  # Number of subjects per batch (each subject has num_views views)
   num_workers: 2
   epochs: 1
   # Optional: fraction of data for validation split (0.0 disables val)

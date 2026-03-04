@@ -6,7 +6,7 @@ import numpy as np
 from torch.utils.data import DataLoader, Subset
 import lightning as L
 
-from src.data.datasets import AvatarDataset, ViewsChunkedDataset
+from src.data.datasets import AvatarDataset
 
 
 def worker_init_fn(worker_id):
@@ -21,7 +21,18 @@ def worker_init_fn(worker_id):
 
 
 class AvatarDataModule(L.LightningDataModule):
-    """Lightning DataModule wrapping AvatarDataset with simple train/val split."""
+    """Lightning DataModule wrapping AvatarDataset with simple train/val split.
+    
+    Batching Strategy:
+    - Each subject has num_views (typically 4) views
+    - `subjects_per_batch` config: Number of subjects processed per training batch
+    - Effective batch size = subjects_per_batch × num_views
+    
+    Example:
+    - subjects_per_batch=2, num_views=4 → Process 2 subjects with 4 views each = 8 views total
+    - Each subject's 4 views are fused independently before decoding
+    - Losses are averaged across all subjects in the batch
+    """
 
     def __init__(self, cfg: Dict[str, Any]):
         super().__init__()
@@ -42,8 +53,6 @@ class AvatarDataModule(L.LightningDataModule):
             transform=None,
             apply_augmentation=False,
         )
-        # Chunk views sequentially based on desired views-per-batch (use train batch_size)
-        chunk_size = int(train_cfg.get("batch_size", 4))
 
         n = len(train_base_ds)
         val_ratio = float(train_cfg.get("val_ratio", 0.0))
@@ -54,20 +63,19 @@ class AvatarDataModule(L.LightningDataModule):
             train_idx = idx[n_val:]
             if len(train_idx) == 0:  # fallback to at least one train sample
                 train_idx, val_idx = idx[:-1], idx[-1:]
-            train_base = Subset(train_base_ds, train_idx)
-            val_base = Subset(val_base_ds, val_idx)
-            self.train_ds = ViewsChunkedDataset(train_base, chunk_size)
-            self.val_ds = ViewsChunkedDataset(val_base, chunk_size)
+            self.train_ds = Subset(train_base_ds, train_idx)
+            self.val_ds = Subset(val_base_ds, val_idx)
         else:
-            self.train_ds = ViewsChunkedDataset(train_base_ds, chunk_size)
+            self.train_ds = train_base_ds
             self.val_ds = None
 
     def train_dataloader(self) -> DataLoader:
         train_cfg = self.cfg.get("train", {})
+        # subjects_per_batch controls how many full subjects to process per batch
+        subjects_per_batch = int(train_cfg.get("subjects_per_batch", 1))
         return DataLoader(
             self.train_ds,
-            # Each batch is one sequential chunk of views
-            batch_size=1,
+            batch_size=subjects_per_batch,
             num_workers=int(train_cfg.get("num_workers", 2)),
             shuffle=True,
             worker_init_fn=worker_init_fn,
@@ -77,9 +85,10 @@ class AvatarDataModule(L.LightningDataModule):
         if self.val_ds is None:
             return None
         train_cfg = self.cfg.get("train", {})
+        subjects_per_batch = int(train_cfg.get("subjects_per_batch", 1))
         return DataLoader(
             self.val_ds,
-            batch_size=1,
+            batch_size=subjects_per_batch,
             num_workers=int(train_cfg.get("num_workers", 2)),
             shuffle=False,
             worker_init_fn=worker_init_fn,

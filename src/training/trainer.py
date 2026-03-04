@@ -87,6 +87,75 @@ class NlfGaussianModel(L.LightningModule):
         return val_loss_dict["loss"]
 
     def shared_step(self, batch: Dict[str, Any], batch_idx: int, stage: str) -> torch.Tensor:
+        """Process a batch that may contain multiple subjects.
+        
+        Each subject has num_views (typically 4) views. The batch dimension allows
+        processing multiple subjects in parallel for efficiency.
+        """
+        # Check if this is a batched input (multiple subjects)
+        img_float_batched = batch["images_float"]
+        if img_float_batched.ndim == 5:  # [BS, V, C, H, W]
+            batch_size = img_float_batched.shape[0]
+            is_batched = True
+        elif img_float_batched.ndim == 4:  # [V, C, H, W] - single subject
+            batch_size = 1
+            is_batched = False
+        else:
+            raise ValueError(f"Unexpected images_float shape: {img_float_batched.shape}")
+        
+        # Process each subject in the batch
+        total_loss = 0.0
+        loss_components = {}
+        
+        for batch_idx_inner in range(batch_size):
+            # Extract single subject from batch
+            if is_batched:
+                # Extract masks safely
+                masks_batch = batch.get("masks_float")
+                masks_single = masks_batch[batch_idx_inner] if masks_batch is not None else None
+                
+                # Extract vertices3d - shape [BS, Nv, 3] → [Nv, 3]
+                verts3d_batch = batch.get("vertices3d")
+                verts3d_single = verts3d_batch[batch_idx_inner] if verts3d_batch is not None else None
+                
+                # Extract vertices2d - shape [BS, V, Nv, 2] → [V, Nv, 2]
+                verts2d_batch = batch.get("vertices2d")
+                verts2d_single = verts2d_batch[batch_idx_inner] if verts2d_batch is not None else None
+                
+                # Extract augmentation_info
+                aug_info_batch = batch.get("augmentation_info", {})
+                aug_info_single = aug_info_batch[batch_idx_inner] if isinstance(aug_info_batch, list) else aug_info_batch
+                
+                subject_batch = {
+                    "images_float": img_float_batched[batch_idx_inner],
+                    "images_uint8": batch["images_uint8"][batch_idx_inner],
+                    "masks_float": masks_single,
+                    "subject": batch["subject"][batch_idx_inner] if isinstance(batch["subject"], (list, tuple)) else batch["subject"],
+                    "view_names": batch["view_names"][batch_idx_inner] if isinstance(batch["view_names"], list) and len(batch["view_names"]) > 0 and isinstance(batch["view_names"][0], (list, tuple)) else batch["view_names"],
+                    "vertices3d": verts3d_single,
+                    "vertices2d": verts2d_single,
+                    "augmentation_info": aug_info_single,
+                }
+            else:
+                subject_batch = batch
+            
+            # Process single subject
+            subject_loss_dict = self._process_single_subject(subject_batch, stage)
+            
+            # Accumulate losses (keep as tensors for gradient flow)
+            total_loss = total_loss + subject_loss_dict["loss"]
+            for k, v in subject_loss_dict.items():
+                if k not in loss_components:
+                    loss_components[k] = torch.zeros_like(v) if isinstance(v, torch.Tensor) else 0.0
+                loss_components[k] = loss_components[k] + v
+        
+        # Average losses across batch
+        avg_loss_dict = {k: v / batch_size for k, v in loss_components.items()}
+        
+        return avg_loss_dict
+    
+    def _process_single_subject(self, batch: Dict[str, Any], stage: str) -> Dict[str, torch.Tensor]:
+        """Process a single subject with its views."""
         # Extract data from batch
         img_float, img_uint8, masks_float, (B, H, W), subject, view_names, vertices3d, vertices2d, augmentation_info = self.process_input(batch)
         if stage == "train":
