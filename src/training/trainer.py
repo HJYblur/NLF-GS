@@ -91,7 +91,7 @@ class NlfGaussianModel(L.LightningModule):
         img_float, img_uint8, (B, H, W), subject, view_names, vertices3d, vertices2d, augmentation_info = self.process_input(batch)
         if stage == "train":
             self._logger.info(f"Processing subject: {subject}, views: {view_names}")
-            if self._is_test_render_batch(batch_idx):
+            if self._is_test_render_batch(subject):
                 self._maybe_save_augmented_inputs(subject, view_names, img_float, augmentation_info)
 
         grad_ctx = torch.inference_mode() if self.train_decoder_only else nullcontext()
@@ -112,6 +112,9 @@ class NlfGaussianModel(L.LightningModule):
             # # Stash GT images on CPU while encoder/decoder run; bring back for loss later
             gt_images = img_float
             del img_float
+            
+        # Normalize backbone features per spatial location across channels.
+        feats = torch.nn.functional.normalize(feats.float(), dim=1, eps=1e-6).to(feats.dtype)
 
         """
         Encode:
@@ -154,6 +157,11 @@ class NlfGaussianModel(L.LightningModule):
         """
 
         gaussian_params = self.decoder(local_feats, z_id)
+        # # overwrite randomly with either (1,0,0), (0,1,0), (0,0,1)
+        # N, k = gaussian_params['sh'].shape
+        # idx = torch.randint(0, k, (N,), device=gaussian_params['sh'].device)
+        # gaussian_params['sh'] = torch.nn.functional.one_hot(idx, num_classes=k).float()
+        # gaussian_params['alpha'][:] = 1.0
 
         # Debug check:
         if self.debug:
@@ -183,7 +191,7 @@ class NlfGaussianModel(L.LightningModule):
         save_path = (
             Path(get_config().get("render", {}).get("save_path", "output"))
             / subject
-        ) if self._is_test_render_batch(batch_idx) else None
+        ) if self._is_test_render_batch(subject) else None
         rendered_imgs = self.renderer.render(
             gaussian_3d=gaussian_3d[0],
             gaussian_params=gaussian_params,
@@ -346,20 +354,9 @@ class NlfGaussianModel(L.LightningModule):
 
         return img_float, img_uint8, (B, H, W), subject, view_names, vertices3d, vertices2d, augmentation_info
 
-    def _is_test_render_batch(self, batch_idx: int) -> bool:
-        try:
-            num_train_batches = len(self.trainer.datamodule.train_dataloader())
-            if num_train_batches <= 0:
-                return False
-            if num_train_batches == 1:
-                return batch_idx == 0
-            n_samples = min(10, num_train_batches)
-            test_renders = set(
-                torch.linspace(0, num_train_batches - 1, steps=n_samples, dtype=torch.long).tolist()
-            )
-            return int(batch_idx) in test_renders
-        except Exception:
-            return False
+    def _is_test_render_batch(self, subject: str) -> bool:
+        test_renders = [0, 7, 50, 100, 200, 350]
+        return int(subject) in test_renders
 
     @staticmethod
     def _to_json_safe(value: Any) -> Any:

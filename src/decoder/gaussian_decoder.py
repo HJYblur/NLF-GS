@@ -47,11 +47,7 @@ class GaussianDecoder(nn.Module):
             nn.Linear(self.hidden, self.out_dim),
         )
 
-        # --- Sensible output bias initialization ---
-        # Output layout: [scales(3), rotation(4), opacity(1), SH(rest)]
-        # Default Kaiming init gives raw ≈ 0; set biases so initial predictions
-        # are physically reasonable before any learning happens.
-        self._init_output_bias()
+        # self._init_output_bias()
 
     def _init_output_bias(self):
         """Set the bias of the last MLP layer to produce sensible initial Gaussian params.
@@ -60,7 +56,7 @@ class GaussianDecoder(nn.Module):
           scales:   sigmoid(0)=0.5 → mid-range  (start smaller to avoid blobs)
           rotation: ~random unit quat             (start at identity [1,0,0,0])
           opacity:  sigmoid(0)=0.5                (start more opaque for visibility)
-          SH DC:    tanh(0)*0.5=0 → gsplat maps to color 0.5 (mid-gray, OK)
+          SH:       random raw bias         (breaks symmetry at startup)
         """
         last_layer = self.mlp[-1]  # nn.Linear(hidden, out_dim)
         with torch.no_grad():
@@ -72,8 +68,17 @@ class GaussianDecoder(nn.Module):
             last_layer.bias[4:7] = 0.0  # x, y, z near zero
             # Opacity (index 7): bias=2 → sigmoid(2)≈0.88, clearly visible
             last_layer.bias[7] = 2.0
-            # SH (indices 8+): leave at 0 — gsplat convention adds 0.5,
-            # so DC=0 already yields ~0.5 (neutral mid-gray)
+            # SH (indices 8+): initialize DC and higher-order terms separately.
+            # First SH RGB triplet (DC) controls base color most strongly, so keep it
+            # zero-centered to avoid washed-out white startup renders.
+            if self.out_dim > 8:
+                sh_bias = last_layer.bias[8:]
+                if sh_bias.numel() >= 3:
+                    sh_bias[:3].uniform_(-1, 1)
+                    if sh_bias.numel() > 3:
+                        sh_bias[3:].uniform_(-0.12, 0.12)
+                else:
+                    sh_bias.uniform_(-0.05, 0.05)
 
     def forward(self, combined_feats, z_id=None):
         """
@@ -186,7 +191,7 @@ class GaussianDecoder(nn.Module):
 
         alpha = torch.sigmoid(alpha_raw)
 
-        sh = torch.tanh(sh_raw) * 0.5
+        sh = sh_raw # torch.tanh(sh_raw) * 0.5
 
         self.investigate(scales, rot, alpha, sh)
         

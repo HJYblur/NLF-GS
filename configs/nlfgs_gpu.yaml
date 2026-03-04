@@ -60,8 +60,8 @@ avatar:
 decoder:
   in_dim: 512  # local feature dim
   hidden: 256
-  sh_degree: 1
-  out_dim: 20
+  sh_degree: 0
+  out_dim: 11
   scale_min: 1.0e-6     # sigmoid lower bound for Gaussian scale
   scale_max: 0.01       # sigmoid upper bound for Gaussian scale
 
@@ -71,7 +71,7 @@ train:
   precision: 16-mixed          # Use AMP (fp16) to halve VRAM on activations & weights
   batch_size: 4                # Must match num_views (4 views fused per subject)
   num_workers: 2
-  epochs: 10
+  epochs: 100
   val_ratio: 0.2
 
   # Optimizer & scheduler settings
@@ -79,12 +79,13 @@ train:
   weight_decay: 0.0
   betas: [0.9, 0.99]
   eps: 1.0e-8
-  warmup_ratio: 0.05  # fraction of total steps used for linear warmup
+  warmup_ratio: 0.1  # fraction of total steps used for linear warmup
   scheduler: cosine 
 
   # Loss weights
   weight_rgb: 1.0
   weight_l1: 0.5
+  weight_l2: 1.0
   weight_masked_ssim: 0.2
   weight_perceptual: 0.3
   weight_scale_reg: 0.01
