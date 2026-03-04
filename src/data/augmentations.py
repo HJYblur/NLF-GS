@@ -39,24 +39,36 @@ class SynchronizedPhotometricAugmentation:
             jpeg_quality_max=int(aug_cfg.get("jpeg_quality_max", 95)),
         )
 
-    def __call__(self, images: torch.Tensor) -> torch.Tensor:
+    def __call__(self, images: torch.Tensor, seed: int = None) -> torch.Tensor:
         """Apply augmentation to [V,C,H,W] tensor in [0,1]."""
-        out, _ = self.apply_with_info(images)
+        out, _ = self.apply_with_info(images, seed=seed)
         return out
 
-    def apply_with_info(self, images: torch.Tensor) -> Tuple[torch.Tensor, Dict[str, Any]]:
-        """Apply augmentation and return both image tensor and sampled parameters."""
+    def apply_with_info(self, images: torch.Tensor, seed: int = None) -> Tuple[torch.Tensor, Dict[str, Any]]:
+        """Apply augmentation and return both image tensor and sampled parameters.
+        
+        Args:
+            images: Input images [V,C,H,W] in range [0,1]
+            seed: Optional seed for reproducible augmentation per subject
+        """
         info: Dict[str, Any] = {"enabled": bool(self.enabled)}
         if (not self.enabled) or images.ndim != 4:
             return images, info
+        
+        # Set random seed for this subject if provided
+        if seed is not None:
+            generator = torch.Generator()
+            generator.manual_seed(seed)
+        else:
+            generator = None
 
         out = images.clone()
 
         # Shared parameters across all views.
-        b = self._sample_factor(self.brightness)
-        c = self._sample_factor(self.contrast)
-        sat = self._sample_factor(self.saturation)
-        g = self._sample_gamma(self.gamma)
+        b = self._sample_factor(self.brightness, generator)
+        c = self._sample_factor(self.contrast, generator)
+        sat = self._sample_factor(self.saturation, generator)
+        g = self._sample_gamma(self.gamma, generator)
         info.update({"brightness_factor": b, "contrast_factor": c, "saturation_factor": sat, "gamma_factor": g})
 
         out = out * b
@@ -70,13 +82,18 @@ class SynchronizedPhotometricAugmentation:
 
         sigma = 0.0
         if self.noise_std > 0:
-            sigma = float(torch.rand(1).item()) * self.noise_std
+            sigma = float(torch.rand(1, generator=generator).item()) * self.noise_std
             if sigma > 0:
-                noise = torch.randn_like(out[:1]) * sigma
+                # Generate noise with the same generator for reproducibility
+                noise_shape = out[:1].shape
+                if generator is not None:
+                    noise = torch.randn(noise_shape, generator=generator, device=out.device, dtype=out.dtype) * sigma
+                else:
+                    noise = torch.randn_like(out[:1]) * sigma
                 out = out + noise
         info["noise_sigma"] = sigma
 
-        blur_applied = bool(self.blur_prob > 0 and torch.rand(1).item() < self.blur_prob)
+        blur_applied = bool(self.blur_prob > 0 and torch.rand(1, generator=generator).item() < self.blur_prob)
         if blur_applied:
             out = F.avg_pool2d(out, kernel_size=3, stride=1, padding=1)
         info["blur_applied"] = blur_applied
@@ -85,10 +102,10 @@ class SynchronizedPhotometricAugmentation:
 
         jpeg_applied = False
         jpeg_quality = -1
-        if self.jpeg_prob > 0 and torch.rand(1).item() < self.jpeg_prob:
+        if self.jpeg_prob > 0 and torch.rand(1, generator=generator).item() < self.jpeg_prob:
             jpeg_applied = True
             jpeg_quality = int(
-                torch.randint(self.jpeg_quality_min, self.jpeg_quality_max + 1, (1,)).item()
+                torch.randint(self.jpeg_quality_min, self.jpeg_quality_max + 1, (1,), generator=generator).item()
             )
             out = self._apply_jpeg(out, jpeg_quality)
         info["jpeg_applied"] = jpeg_applied
@@ -97,18 +114,18 @@ class SynchronizedPhotometricAugmentation:
         return out.clamp(0.0, 1.0), info
 
     @staticmethod
-    def _sample_factor(amount: float) -> float:
+    def _sample_factor(amount: float, generator=None) -> float:
         if amount <= 0:
             return 1.0
-        return float(torch.empty(1).uniform_(1.0 - amount, 1.0 + amount).item())
+        return float(torch.empty(1, generator=generator).uniform_(1.0 - amount, 1.0 + amount).item())
 
     @staticmethod
-    def _sample_gamma(amount: float) -> float:
+    def _sample_gamma(amount: float, generator=None) -> float:
         if amount <= 0:
             return 1.0
         lo = max(0.1, 1.0 - amount)
         hi = 1.0 + amount
-        return float(torch.empty(1).uniform_(lo, hi).item())
+        return float(torch.empty(1, generator=generator).uniform_(lo, hi).item())
 
     @staticmethod
     def _apply_jpeg(images: torch.Tensor, quality: int) -> torch.Tensor:

@@ -106,7 +106,10 @@ class AvatarDataset(Dataset):
 
         augmentation_info: Dict[str, Any] = {"enabled": False}
         if self.apply_augmentation:
-            images_float, augmentation_info = self.augmentation.apply_with_info(images_float)
+            # Create a deterministic seed based on subject ID for consistent augmentation per subject
+            # This ensures different subjects get different augmentations, but views remain consistent
+            subject_seed = hash(rec["subject"]) % (2**31)  # Convert subject ID to seed
+            images_float, augmentation_info = self.augmentation.apply_with_info(images_float, seed=subject_seed)
 
         images_uint8 = (images_float.clamp(0.0, 1.0) * 255.0).round().to(torch.uint8)  # [V,C,H,W]
 

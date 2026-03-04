@@ -2,10 +2,22 @@ from typing import Optional, Dict, Any, Callable
 
 import math
 import torch
+import numpy as np
 from torch.utils.data import DataLoader, Subset
 import lightning as L
 
 from src.data.datasets import AvatarDataset, ViewsChunkedDataset
+
+
+def worker_init_fn(worker_id):
+    """Initialize each DataLoader worker with a unique random seed.
+    
+    This ensures different workers generate different augmentations
+    and prevents reproducibility issues in multi-worker scenarios.
+    """
+    worker_seed = torch.initial_seed() % 2**32
+    np.random.seed(worker_seed)
+    torch.manual_seed(worker_seed)
 
 
 class AvatarDataModule(L.LightningDataModule):
@@ -58,6 +70,7 @@ class AvatarDataModule(L.LightningDataModule):
             batch_size=1,
             num_workers=int(train_cfg.get("num_workers", 2)),
             shuffle=True,
+            worker_init_fn=worker_init_fn,
         )
 
     def val_dataloader(self) -> Optional[DataLoader]:
@@ -69,4 +82,5 @@ class AvatarDataModule(L.LightningDataModule):
             batch_size=1,
             num_workers=int(train_cfg.get("num_workers", 2)),
             shuffle=False,
+            worker_init_fn=worker_init_fn,
         )
