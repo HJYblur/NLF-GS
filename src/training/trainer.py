@@ -71,6 +71,12 @@ class NlfGaussianModel(L.LightningModule):
         if self.train_decoder_only:
             self.freeze_encoder()
             self._logger.info("Frozen encoder parameters.")
+
+        # Feature-dump settings for PCA analysis
+        analysis_cfg = get_config().get("analysis", {})
+        self._dump_local_feats = bool(analysis_cfg.get("dump_local_feats", False))
+        self._dump_subject = analysis_cfg.get("dump_subject", None)  # None → dump all
+        self._dump_dir = Path(str(analysis_cfg.get("dump_dir", "output/analysis")))
             
         self._logger.info(f"Debug mode: {self.debug}")
 
@@ -146,6 +152,8 @@ class NlfGaussianModel(L.LightningModule):
             ) / weight_sum.unsqueeze(
                 -1
             )  # (1, N, C_local)
+
+        self._maybe_dump_local_feats(subject, local_feats)
 
         # Free large intermediates early to reduce peak VRAM before decoding
         del feats
@@ -234,6 +242,22 @@ class NlfGaussianModel(L.LightningModule):
 
         del gaussian_3d
         return loss_dict
+
+    def _maybe_dump_local_feats(self, subject: str, local_feats: torch.Tensor) -> None:
+        """Save view-aggregated local_feats (1, N, C) to disk for offline PCA analysis.
+
+        Enabled only when ``analysis.dump_local_feats: true`` in the config.
+        If ``analysis.dump_subject`` is set, only that subject is dumped.
+        """
+        if not self._dump_local_feats:
+            return
+        if self._dump_subject is not None and str(subject) != str(self._dump_subject):
+            return
+
+        self._dump_dir.mkdir(parents=True, exist_ok=True)
+        out_path = self._dump_dir / f"local_feats_{subject}.pt"
+        torch.save(local_feats.detach().cpu(), out_path)
+        self._logger.info(f"Dumped local_feats for subject {subject} → {out_path}")
 
     def freeze_encoder(self):
         for p in self.identity_encoder.parameters():

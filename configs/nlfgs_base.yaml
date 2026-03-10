@@ -78,6 +78,11 @@ train:
   epochs: 1
   # Optional: fraction of data for validation split (0.0 disables val)
   val_ratio: 0.0
+
+analysis:
+  dump_local_feats: false   # set true to save local_feats tensors for PCA analysis
+  dump_subject: "0001"       # subject ID to dump; null means dump every subject
+  dump_dir: output/analysis  # directory where .pt files are written
   # Optimizer & scheduler settings
   lr: 0.0001
   weight_decay: 0.0
