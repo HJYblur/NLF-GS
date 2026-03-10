@@ -268,10 +268,6 @@ class NlfGaussianModel(L.LightningModule):
     def on_train_batch_end(self, outputs, batch, batch_idx):
         lr = self.trainer.optimizers[0].param_groups[0]["lr"]
         self.log("train/lr", lr, prog_bar=True)
-        
-        # Log gradient norms for each decoder parameter to track which dimensions are being updated
-        if batch_idx % 10 == 0:  # Log every 10 batches to reduce overhead
-            self._log_decoder_gradient_norms()
 
     def process_input(self, batch):
         """Extract tensors from the dataset batch and normalize shape/device.
@@ -379,6 +375,20 @@ class NlfGaussianModel(L.LightningModule):
         if isinstance(augmentation_info, (list, tuple)) and len(augmentation_info) == 1 and isinstance(augmentation_info[0], dict):
             augmentation_info = augmentation_info[0]
 
+        # Pre-check: Set the avatar to be all red
+        # mask = (img_float == 0).all(dim=1, keepdim=True)   # (B, 1, H, W)
+
+        # # set masked pixels to red
+        # img_float = torch.where(
+        #     mask,
+        #     torch.tensor([1.0, 0.0, 0.0], device=img_float.device, dtype=img_float.dtype)
+        #         .view(1, 3, 1, 1),
+        #     img_float
+        # )
+
+        # from torchvision.utils import save_image
+        # save_image(img_float.clamp(0.0, 1.0), f"debug_input_{subject}.png")
+        
         return img_float, img_uint8, masks_float, (B, H, W), subject, view_names, vertices3d, vertices2d, augmentation_info
 
     def _is_test_render_batch(self, subject: str) -> bool:
@@ -498,80 +508,43 @@ class NlfGaussianModel(L.LightningModule):
             loss = loss + 0.1 * (q.norm(dim=-1) - 1.0).pow(2).mean()
         return {"loss": loss}
     
-    def _log_decoder_gradient_norms(self):
-        """Log gradient magnitudes for each decoder parameter to track which are actively training."""
-        grad_norms = {}
-        param_stats = {}
-        
-        for name, param in self.decoder.named_parameters():
-            if param.grad is not None:
-                # Compute gradient norm
-                grad_norm = param.grad.norm().item()
-                grad_norms[f"grads/{name}"] = grad_norm
-                
-                # Compute mean absolute gradient
-                mean_abs_grad = param.grad.abs().mean().item()
-                grad_norms[f"grads/{name}_mean_abs"] = mean_abs_grad
-            
-            # Log parameter statistics
-            param_stats[f"params/{name}_mean"] = param.data.mean().item()
-            param_stats[f"params/{name}_std"] = param.data.std().item()
-            param_stats[f"params/{name}_absmax"] = param.data.abs().max().item()
-        
-        # Log all at once
-        self.log_dict(grad_norms, on_step=True, on_epoch=False)
-        self.log_dict(param_stats, on_step=True, on_epoch=False)
-    
     def _log_gaussian_param_stats(self, gaussian_params: Dict[str, torch.Tensor]):
-        """Log statistics of the actual Gaussian parameters output by decoder."""
+        """Log stats aligned with decoder output dict: scales, rotation, alpha, sh."""
         stats = {}
-        
-        if "scales" in gaussian_params:
-            scales = gaussian_params["scales"]
-            stats["gaussian/scales_mean"] = scales.mean().item()
-            stats["gaussian/scales_std"] = scales.std().item()
-            stats["gaussian/scales_min"] = scales.min().item()
-            stats["gaussian/scales_max"] = scales.max().item()
-        
-        if "rotation" in gaussian_params:
-            rot = gaussian_params["rotation"]
-            stats["gaussian/rotation_norm_mean"] = rot.norm(dim=-1).mean().item()
-            stats["gaussian/rotation_norm_std"] = rot.norm(dim=-1).std().item()
-        
-        if "alpha" in gaussian_params:
-            alpha = gaussian_params["alpha"]
-            stats["gaussian/alpha_mean"] = alpha.mean().item()
-            stats["gaussian/alpha_std"] = alpha.std().item()
-            stats["gaussian/alpha_min"] = alpha.min().item()
-            stats["gaussian/alpha_max"] = alpha.max().item()
-        
-        if "sh" in gaussian_params and gaussian_params["sh"] is not None:
-            sh = gaussian_params["sh"]
-            stats["gaussian/sh_mean"] = sh.mean().item()
-            stats["gaussian/sh_std"] = sh.std().item()
-            stats["gaussian/sh_absmax"] = sh.abs().max().item()
-        
-        self.log_dict(stats, on_step=True, on_epoch=False)
+        for key in ("scales", "rotation", "alpha", "sh"):
+            tensor = gaussian_params.get(key, None)
+            if tensor is None or tensor.numel() == 0:
+                continue
+
+            stats[f"gaussian/{key}_mean"] = tensor.mean().item()
+            stats[f"gaussian/{key}_min"] = tensor.min().item()
+            stats[f"gaussian/{key}_max"] = tensor.max().item()
+
+        if stats:
+            self.log_dict(stats, on_step=True, on_epoch=False)
     
     def _register_gaussian_param_grad_hooks(self, gaussian_params: Dict[str, torch.Tensor], batch_idx: int):
-        """Register backward hooks to capture gradient magnitudes flowing to each Gaussian parameter type."""
-        
-        def make_hook(param_name):
-            def hook(grad):
-                if grad is not None:
-                    grad_stats = {
-                        f"param_grads/{param_name}_norm": grad.norm().item(),
-                        f"param_grads/{param_name}_mean": grad.mean().item(),
-                        f"param_grads/{param_name}_std": grad.std().item(),
-                        f"param_grads/{param_name}_absmax": grad.abs().max().item(),
-                    }
-                    self.log_dict(grad_stats, on_step=True, on_epoch=False)
+        """Register backward hooks and log per-output-dict gradient stats (scales/rotation/alpha/sh)."""
+
+        def make_hook(param_name: str):
+            def hook(grad: torch.Tensor):
+                if grad is None or grad.numel() == 0:
+                    return grad
+
+                grad_stats = {
+                    f"gaussian_grads/{param_name}_mean": grad.mean().item(),
+                    f"gaussian_grads/{param_name}_min": grad.min().item(),
+                    f"gaussian_grads/{param_name}_max": grad.max().item(),
+                }
+
+                self.log_dict(grad_stats, on_step=True, on_epoch=False)
                 return grad
+
             return hook
-        
-        # Register hooks for each parameter type
-        for name, tensor in gaussian_params.items():
-            if tensor is not None and tensor.requires_grad:
+
+        for name in ("scales", "rotation", "alpha", "sh"):
+            tensor = gaussian_params.get(name, None)
+            if tensor is not None and tensor.requires_grad and tensor.numel() > 0:
                 tensor.register_hook(make_hook(name))
 
 

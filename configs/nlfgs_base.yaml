@@ -62,6 +62,14 @@ decoder:
   hidden: 256
   sh_degree: 3
   out_dim: 56 # scale3 + rot4 + opacity1 + sh(degree 3), sh param = 3*(degree + 1)^2 = 48; total = 3 + 4 + 1 + 48 = 56
+  scale_min: 1.0e-6     # lower bound for Gaussian scales
+  scale_max: 1.0e-3     # upper bound for Gaussian scales
+  alpha_min: 0.0        # lower bound for opacity
+  alpha_max: 1.0        # upper bound for opacity
+  rot_min: -1.0         # pre-normalization lower bound for quaternion components
+  rot_max: 1.0          # pre-normalization upper bound for quaternion components
+  sh_min: -1.0          # lower bound for SH coefficients
+  sh_max: 1.0           # upper bound for SH coefficients
 
 train:
   accelerator: cpu
