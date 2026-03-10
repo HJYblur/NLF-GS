@@ -29,7 +29,13 @@ class GaussianDecoder(nn.Module):
 
         # Scale parameterization bounds (sigmoid-based, always differentiable)
         self.scale_min = float(dec_cfg.get("scale_min", 1e-6))
-        self.scale_max = float(dec_cfg.get("scale_max", 0.01))
+        self.scale_max = float(dec_cfg.get("scale_max", 0.001))
+        self.alpha_min = float(dec_cfg.get("alpha_min", 0.0))
+        self.alpha_max = float(dec_cfg.get("alpha_max", 1.0))
+        self.rot_min = float(dec_cfg.get("rot_min", -1.0))
+        self.rot_max = float(dec_cfg.get("rot_max", 1.0))
+        self.sh_min = float(dec_cfg.get("sh_min", -1.0))
+        self.sh_max = float(dec_cfg.get("sh_max", 1.0))
 
         # first local block
         self.fc1 = nn.Linear(self.in_dim, self.hidden)
@@ -182,16 +188,22 @@ class GaussianDecoder(nn.Module):
             else out.new_zeros((*out.shape[:-1], 0))
         )
 
-        # Sigmoid-based bounded scaling: smooth gradients everywhere,
-        # prevents exploding Gaussians while avoiding hard-clamp dead zones.
-        scales = self.scale_min + (self.scale_max - self.scale_min) * torch.sigmoid(scales_raw)
+        # Normalize each output head to [0, 1] in latent prediction space,
+        # then map to its physical domain.
+        scales_01 = torch.sigmoid(scales_raw)
+        rot_01 = torch.sigmoid(rot_raw)
+        alpha_01 = torch.sigmoid(alpha_raw)
+        sh_01 = torch.sigmoid(sh_raw)
 
-        rot_norm = torch.linalg.norm(rot_raw, dim=-1, keepdim=True)
-        rot = rot_raw / (rot_norm + 1e-8)
+        scales = self.scale_min + (self.scale_max - self.scale_min) * scales_01
 
-        alpha = torch.sigmoid(alpha_raw)
+        rot_mapped = self.rot_min + (self.rot_max - self.rot_min) * rot_01
+        rot_norm = torch.linalg.norm(rot_mapped, dim=-1, keepdim=True)
+        rot = rot_mapped / (rot_norm + 1e-8)
 
-        sh = sh_raw # torch.tanh(sh_raw) * 0.5
+        alpha = self.alpha_min + (self.alpha_max - self.alpha_min) * alpha_01
+
+        sh = self.sh_min + (self.sh_max - self.sh_min) * sh_01
 
         self.investigate(scales, rot, alpha, sh)
         
