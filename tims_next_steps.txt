@@ -1,6 +1,0 @@
-- think about loss; l1 loss is now only on relevant pixels, but ssim is still default, look at what other papers do?
-- add augmentations to dataset!!!!!!!
-- - augmentation on camera (rotating cross blabl, good idae?? not sure??)
-- then try to figure out why loss is not converging
-- - too high / low LR?
-- - objective too hard (need other loss components)?
