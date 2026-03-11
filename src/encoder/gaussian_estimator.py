@@ -312,4 +312,4 @@ class AvatarGaussianEstimator(nn.Module):
             img_shape=img_shape,
             depth_eps=depth_eps,
         )
-        return local_feats, view_weights, centers3d
+        return local_feats, view_weights, centers3d, centers2d

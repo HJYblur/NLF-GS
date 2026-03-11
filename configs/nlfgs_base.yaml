@@ -80,9 +80,12 @@ train:
   val_ratio: 0.0
 
 analysis:
-  dump_local_feats: false   # set true to save local_feats tensors for PCA analysis
-  dump_subject: "0001"       # subject ID to dump; null means dump every subject
-  dump_dir: output/analysis  # directory where .pt files are written
+  dump_local_feats: false     # set true to save local_feats and collision_data tensors
+  dump_collision_data: true   # also write collision_data_<subject>.pt (centers2d + sizes)
+  dump_subject: "0001"        # subject ID to dump; null means dump every subject
+  dump_dir: output/analysis   # directory where .pt files are written
+
+train:
   # Optimizer & scheduler settings
   lr: 0.0001
   weight_decay: 0.0

@@ -137,11 +137,11 @@ class NlfGaussianModel(L.LightningModule):
             else:
                 z_id = None
 
-            local_feats, view_weights, gaussian_3d = (
+            local_feats, view_weights, gaussian_3d, centers2d = (
                 self.avatar_estimator.feature_sample_with_visibility(
                     feats, vertices3d, vertices2d, img_shape=(H, W)
                 )
-            )  # (B, N, C_local), (B, N), (B, N, 3)
+            )  # (B, N, C_local), (B, N), (B, N, 3), (B, N, 2)
             
         # self.debug3d(gaussian_3d[0], subject)
 
@@ -153,7 +153,8 @@ class NlfGaussianModel(L.LightningModule):
                 -1
             )  # (1, N, C_local)
 
-        self._maybe_dump_local_feats(subject, local_feats)
+        feat_size = feats.shape[-2:]  # (Hf, Wf)
+        self._maybe_dump_local_feats(subject, local_feats, centers2d, (H, W), feat_size)
 
         # Free large intermediates early to reduce peak VRAM before decoding
         del feats
@@ -243,8 +244,19 @@ class NlfGaussianModel(L.LightningModule):
         del gaussian_3d
         return loss_dict
 
-    def _maybe_dump_local_feats(self, subject: str, local_feats: torch.Tensor) -> None:
+    def _maybe_dump_local_feats(
+        self,
+        subject: str,
+        local_feats: torch.Tensor,
+        centers2d: torch.Tensor,
+        img_size: tuple,
+        feat_size,
+    ) -> None:
         """Save view-aggregated local_feats (1, N, C) to disk for offline PCA analysis.
+
+        Also saves a companion collision-data file containing per-view Gaussian
+        2-D centers in pixel coordinates plus the image/feature-map sizes, used
+        by the projection-collision analysis notebook section.
 
         Enabled only when ``analysis.dump_local_feats: true`` in the config.
         If ``analysis.dump_subject`` is set, only that subject is dumped.
@@ -255,9 +267,24 @@ class NlfGaussianModel(L.LightningModule):
             return
 
         self._dump_dir.mkdir(parents=True, exist_ok=True)
+
         out_path = self._dump_dir / f"local_feats_{subject}.pt"
         torch.save(local_feats.detach().cpu(), out_path)
         self._logger.info(f"Dumped local_feats for subject {subject} → {out_path}")
+
+        # Companion file for projection-collision analysis
+        H, W = int(img_size[0]), int(img_size[1])
+        Hf, Wf = int(feat_size[-2]), int(feat_size[-1])
+        collision_path = self._dump_dir / f"collision_data_{subject}.pt"
+        torch.save(
+            {
+                "centers2d": centers2d.detach().cpu(),  # (B, N, 2) pixel coords
+                "img_size": (H, W),
+                "feat_size": (Hf, Wf),
+            },
+            collision_path,
+        )
+        self._logger.info(f"Dumped collision_data for subject {subject} → {collision_path}")
 
     def freeze_encoder(self):
         for p in self.identity_encoder.parameters():
