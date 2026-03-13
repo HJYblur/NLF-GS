@@ -49,6 +49,10 @@ class NlfGaussianModel(L.LightningModule):
         self.loss_fn = LossFunctions()    
         self.train_decoder_only = train_decoder_only
 
+        # Keep backbone frozen only in decoder-only mode.
+        if hasattr(self.backbone, "set_resnet_fpn_frozen"):
+            self.backbone.set_resnet_fpn_frozen(self.train_decoder_only)
+
         # Read optimizer & scheduler settings from config and save as hyperparameters
         train_cfg = get_config().get("train", {})
         lr = float(train_cfg.get("lr", 1e-4))
@@ -339,8 +343,14 @@ class NlfGaussianModel(L.LightningModule):
             p.requires_grad = False
 
     def configure_optimizers(self):
+        trainable_params = list(self.decoder.parameters())
+        if not self.train_decoder_only:
+            trainable_params += [
+                p for p in self.backbone.parameters() if p.requires_grad
+            ]
+
         optimizer = torch.optim.AdamW(
-            self.decoder.parameters(),
+            trainable_params,
             lr=float(self.hparams.lr),
             weight_decay=float(self.hparams.wd),
             betas=tuple(self.hparams.betas) if isinstance(self.hparams.betas, (list, tuple)) else (0.9, 0.99),

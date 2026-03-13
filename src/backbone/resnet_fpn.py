@@ -1,4 +1,5 @@
 from collections import OrderedDict
+from contextlib import nullcontext
 from pathlib import Path
 from typing import Iterable, List, Optional
 
@@ -15,16 +16,22 @@ class FrozenResNet50FPNExtractor(nn.Module):
         self,
         selected_levels: Iterable[str] = ("p2", "p3", "p4"),
         backbone_weights_path: Optional[str] = None,
+        frozen: bool = True,
     ):
         super().__init__()
         self.selected_levels: List[str] = list(selected_levels)
         self._level_to_fpn_key = {"p2": "0", "p3": "1", "p4": "2", "p5": "3"}
+        self.frozen = bool(frozen)
 
         self.backbone = self._build_backbone(backbone_weights_path)
+        self.set_frozen(self.frozen)
 
-        self.backbone.eval()
+    def set_frozen(self, frozen: bool) -> None:
+        self.frozen = bool(frozen)
         for param in self.backbone.parameters():
-            param.requires_grad = False
+            param.requires_grad = not self.frozen
+        if self.frozen:
+            self.backbone.eval()
 
     def _build_backbone(self, backbone_weights_path: Optional[str]) -> nn.Module:
         if backbone_weights_path:
@@ -52,14 +59,20 @@ class FrozenResNet50FPNExtractor(nn.Module):
         )
 
     def train(self, mode: bool = True):
-        # Keep this extractor permanently frozen in eval mode.
-        super().train(False)
-        self.backbone.eval()
+        if self.frozen:
+            # Keep this extractor permanently frozen in eval mode.
+            super().train(False)
+            self.backbone.eval()
+            return self
+
+        super().train(mode)
+        self.backbone.train(mode)
         return self
 
     def forward(self, image: torch.Tensor) -> OrderedDict:
-        # Keep the frozen extractor in fp32 to avoid AMP/mixed-precision dtype mismatches.
-        with torch.no_grad(), torch.autocast(device_type=image.device.type, enabled=False):
+        # Keep extractor in fp32 to avoid dtype mismatches with downstream consumers.
+        grad_ctx = torch.no_grad() if self.frozen else nullcontext()
+        with grad_ctx, torch.autocast(device_type=image.device.type, enabled=False):
             feats = self.backbone(image.float())
 
         selected = OrderedDict()

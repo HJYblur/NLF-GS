@@ -15,6 +15,7 @@ class FeatureExtractor(nn.Module):
         use_resnet_fpn: bool = False,
         fpn_levels=None,
         resnet_weights_path: Optional[str] = None,
+        freeze_resnet_fpn: bool = True,
     ):
         super().__init__()
         if not hasattr(nlf_model, "detector"):
@@ -28,12 +29,17 @@ class FeatureExtractor(nn.Module):
             self.fpn_extractor = FrozenResNet50FPNExtractor(
                 selected_levels=fpn_levels or ("p2", "p3", "p4"),
                 backbone_weights_path=resnet_weights_path,
+                frozen=freeze_resnet_fpn,
             )
         else:
             if not hasattr(nlf_model, "crop_model") or not hasattr(
                 nlf_model.crop_model, "backbone"
             ):
                 raise AttributeError("nlf_model must expose crop_model.backbone")
+
+    def set_resnet_fpn_frozen(self, frozen: bool) -> None:
+        if self.use_resnet_fpn and self.fpn_extractor is not None:
+            self.fpn_extractor.set_frozen(frozen)
 
 
     def forward(

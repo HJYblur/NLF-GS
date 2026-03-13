@@ -89,6 +89,8 @@ def main():
 
     # Backbone Adapter Initialization
     backbone_cfg = cfg.get("backbone", {})
+    train_cfg = cfg.get("train", {})
+    train_decoder_only = bool(train_cfg.get("train_decoder_only", True))
     use_resnet_fpn = bool(backbone_cfg.get("use_resnet_fpn", True))
     fpn_levels = tuple(backbone_cfg.get("fpn_levels", ["p2", "p3", "p4"]))
     backbone = FeatureExtractor(
@@ -96,6 +98,7 @@ def main():
         use_resnet_fpn=use_resnet_fpn,
         fpn_levels=fpn_levels,
         resnet_weights_path=backbone_cfg.get("resnet50_weights_path"),
+        freeze_resnet_fpn=train_decoder_only,
     )
     logger.info("Backbone Adapter initialized")
 
@@ -123,7 +126,7 @@ def main():
         identity_encoder=id_encoder,
         decoder=decoder,
         renderer=renderer,
-        train_decoder_only=True,
+        train_decoder_only=train_decoder_only,
     )
 
     max_epochs = int(cfg["train"]["epochs"]) if "train" in cfg else 1

@@ -81,6 +81,7 @@ decoder:
 
 train:
   accelerator: cpu
+  train_decoder_only: true # true: freeze backbone and train decoder only; false: also train ResNet-FPN
   batch_size: 4
   num_workers: 2
   epochs: 1
