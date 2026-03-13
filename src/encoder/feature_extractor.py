@@ -1,11 +1,12 @@
 from typing import Any, Dict, Optional
 
 import torch
+import torch.nn as nn
 
 from backbone.resnet_fpn import FrozenResNet50FPNExtractor
 
 
-class FeatureExtractor:
+class FeatureExtractor(nn.Module):
     """Feature extractor exposing either NLF features or frozen ResNet50-FPN features."""
 
     def __init__(
@@ -15,6 +16,7 @@ class FeatureExtractor:
         fpn_levels=None,
         resnet_weights_path: Optional[str] = None,
     ):
+        super().__init__()
         if not hasattr(nlf_model, "detector"):
             raise AttributeError("nlf_model must expose detector")
 
@@ -33,8 +35,13 @@ class FeatureExtractor:
             ):
                 raise AttributeError("nlf_model must expose crop_model.backbone")
 
-    def __call__(self, image: torch.Tensor, use_half: bool = True):
-        return self.extract_feature_map(image=image, use_half=use_half)
+
+    def forward(
+        self, image: torch.Tensor, use_half: bool = True, use_heatmap_head: bool = True
+    ):
+        return self.extract_feature_map(
+            image=image, use_half=use_half, use_heatmap_head=use_heatmap_head
+        )
 
     def extract_feature_map(
         self, image: torch.Tensor, use_half: bool = True, use_heatmap_head: bool = True

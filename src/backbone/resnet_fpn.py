@@ -51,11 +51,6 @@ class FrozenResNet50FPNExtractor(nn.Module):
             trainable_layers=0,
         )
 
-    def _ensure_backbone_device(self, device: torch.device) -> None:
-        current_device = next(self.backbone.parameters()).device
-        if current_device != device:
-            self.backbone.to(device)
-
     def train(self, mode: bool = True):
         # Keep this extractor permanently frozen in eval mode.
         super().train(False)
@@ -63,10 +58,6 @@ class FrozenResNet50FPNExtractor(nn.Module):
         return self
 
     def forward(self, image: torch.Tensor) -> OrderedDict:
-        # FeatureExtractor is not an nn.Module, so Lightning will not auto-move this
-        # frozen backbone to the batch device. Keep device and dtype aligned manually.
-        self._ensure_backbone_device(image.device)
-
         # Keep the frozen extractor in fp32 to avoid AMP/mixed-precision dtype mismatches.
         with torch.no_grad(), torch.autocast(device_type=image.device.type, enabled=False):
             feats = self.backbone(image.float())
