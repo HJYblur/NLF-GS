@@ -112,7 +112,7 @@ train:
   profile_gpu: False
 
 analysis:
-  dump_local_feats: false # set true to save local_feats and collision_data tensors
+  dump_local_feats: true # set true to save local_feats and collision_data tensors
   dump_collision_data: true # also write collision_data_<subject>.pt (centers2d + sizes)
   dump_subject: "0007" # subject ID to dump; null means dump every subject
   dump_dir: tmp/analysis # directory where .pt files are written

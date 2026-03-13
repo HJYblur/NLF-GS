@@ -156,6 +156,7 @@ class NlfGaussianModel(L.LightningModule):
                     feats, vertices3d, vertices2d, img_shape=(H, W)
                 )
             )  # (B, N, C_local), (B, N), (B, N, 3), (B, N, 2)
+        local_feats_prefusion = local_feats
             
         # self.debug3d(gaussian_3d[0], subject)
 
@@ -168,7 +169,15 @@ class NlfGaussianModel(L.LightningModule):
             )  # (1, N, C_local)
 
         feat_size = feat_for_id.shape[-2:]  # (Hf, Wf)
-        self._maybe_dump_local_feats(subject, local_feats, centers2d, (H, W), feat_size)
+        self._maybe_dump_local_feats(
+            subject,
+            local_feats,
+            centers2d,
+            (H, W),
+            feat_size,
+            local_feats_prefusion,
+            view_weights,
+        )
 
         if not self._shape_debug_logged:
             if isinstance(feats, dict):
@@ -280,6 +289,8 @@ class NlfGaussianModel(L.LightningModule):
         centers2d: torch.Tensor,
         img_size: tuple,
         feat_size,
+        local_feats_prefusion: torch.Tensor,
+        view_weights: torch.Tensor,
     ) -> None:
         """Save view-aggregated local_feats (1, N, C) to disk for offline PCA analysis.
 
@@ -300,6 +311,19 @@ class NlfGaussianModel(L.LightningModule):
         out_path = self._dump_dir / f"local_feats_{subject}.pt"
         torch.save(local_feats.detach().cpu(), out_path)
         self._logger.info(f"Dumped local_feats for subject {subject} → {out_path}")
+
+        # Companion file for pre/post fusion quality analysis
+        fusion_path = self._dump_dir / f"fusion_data_{subject}.pt"
+        torch.save(
+            {
+                "local_feats_prefusion": local_feats_prefusion.detach().cpu(),  # (B, N, C)
+                "view_weights": view_weights.detach().cpu(),  # (B, N)
+                "local_feats_postfusion": local_feats.detach().cpu(),  # (1, N, C)
+                "centers2d": centers2d.detach().cpu(),  # (B, N, 2)
+            },
+            fusion_path,
+        )
+        self._logger.info(f"Dumped fusion_data for subject {subject} → {fusion_path}")
 
         # Companion file for projection-collision analysis
         H, W = int(img_size[0]), int(img_size[1])
