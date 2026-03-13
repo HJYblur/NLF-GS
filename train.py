@@ -12,7 +12,7 @@ from lightning.pytorch.loggers import WandbLogger
 sys.path.append(str(Path(__file__).parent / "src"))
 
 from src.data.datamodule import AvatarDataModule
-from src.encoder.nlf_backbone_adapter import NLFBackboneAdapter
+from src.encoder.feature_extractor import FeatureExtractor
 from src.encoder.identity_encoder import IdentityEncoder
 from src.decoder.gaussian_decoder import GaussianDecoder
 from src.render.gaussian_renderer import GsplatRenderer
@@ -88,18 +88,30 @@ def main():
         )
 
     # Backbone Adapter Initialization
-    backbone = NLFBackboneAdapter(nlf_checkpoint)
-    logger.info("NLF Backbone Adapter initialized")
-    c_local = int(cfg["nlf"].get("latent_dim", 512))
-    logger.debug(f"Backbone feature map channels: {c_local}")
+    backbone_cfg = cfg.get("backbone", {})
+    use_resnet_fpn = bool(backbone_cfg.get("use_resnet_fpn", True))
+    fpn_levels = tuple(backbone_cfg.get("fpn_levels", ["p2", "p3", "p4"]))
+    backbone = FeatureExtractor(
+        nlf_checkpoint,
+        use_resnet_fpn=use_resnet_fpn,
+        fpn_levels=fpn_levels,
+    )
+    logger.info("Backbone Adapter initialized")
+
+    if use_resnet_fpn:
+        fpn_out_channels = int(backbone_cfg.get("fpn_out_channels", 256))
+        c_local = fpn_out_channels * len(fpn_levels)
+    else:
+        c_local = int(cfg["nlf"].get("latent_dim", 512))
+    logger.info(f"Local feature dim: {c_local}")
 
     # Identity Encoder Initialization
     id_latent_dim = int(cfg["identity_encoder"].get("latent_dim", 64))
     id_encoder = IdentityEncoder(backbone_feat_dim=c_local, latent_dim=id_latent_dim)
 
     # Decoder Initialization
-    decoder = GaussianDecoder()  # local feature dim + coord3d dim
-    logger.info(f"Decoder Initialized.")  # 512 + 3 = 515
+    decoder = GaussianDecoder()
+    logger.info("Decoder initialized")
 
     # Renderer Initialization
     renderer = GsplatRenderer() if device != torch.device("cpu") else None

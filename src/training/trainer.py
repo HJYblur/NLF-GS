@@ -8,7 +8,7 @@ import math
 import torch
 from torch.utils.data import DataLoader
 import lightning as L
-from encoder.nlf_backbone_adapter import NLFBackboneAdapter
+from encoder.feature_extractor import FeatureExtractor
 from encoder.gaussian_estimator import AvatarGaussianEstimator
 from encoder.identity_encoder import IdentityEncoder
 from encoder.avatar_template import AvatarTemplate
@@ -22,7 +22,7 @@ from avatar_utils.config import get_config
 class NlfGaussianModel(L.LightningModule):
     def __init__(
         self,
-        backbone_adapter: NLFBackboneAdapter,
+        backbone_adapter: FeatureExtractor,
         identity_encoder: IdentityEncoder,
         decoder: GaussianDecoder,
         renderer: GsplatRenderer,
@@ -78,6 +78,7 @@ class NlfGaussianModel(L.LightningModule):
         self._dump_subject = analysis_cfg.get("dump_subject", None)  # None → dump all
         self._dump_dir = Path(str(analysis_cfg.get("dump_dir", "output/analysis")))
             
+        self._shape_debug_logged = False
         self._logger.info(f"Debug mode: {self.debug}")
 
     def training_step(self, batch: Dict[str, Any], batch_idx: int):
@@ -113,14 +114,27 @@ class NlfGaussianModel(L.LightningModule):
                         image=img_float[v_idx : v_idx + 1], use_half=True
                     )
                     feat_list.append(f_v)
-                feats = torch.cat(feat_list, dim=0)  # (B, C, Hf, Wf)
+                if isinstance(feat_list[0], dict):
+                    feats = {
+                        level: torch.cat([fv[level] for fv in feat_list], dim=0)
+                        for level in feat_list[0].keys()
+                    }
+                else:
+                    feats = torch.cat(feat_list, dim=0)  # (B, C, Hf, Wf)
                 del feat_list
-            # # Stash GT images on CPU while encoder/decoder run; bring back for loss later
             gt_images = img_float
             del img_float
-            
+
         # Normalize backbone features per spatial location across channels.
-        feats = torch.nn.functional.normalize(feats.float(), dim=1, eps=1e-6).to(feats.dtype)
+        if isinstance(feats, dict):
+            feats = {
+                level: torch.nn.functional.normalize(f.float(), dim=1, eps=1e-6).to(f.dtype)
+                for level, f in feats.items()
+            }
+            feat_for_id = next(iter(feats.values()))
+        else:
+            feats = torch.nn.functional.normalize(feats.float(), dim=1, eps=1e-6).to(feats.dtype)
+            feat_for_id = feats
 
         """
         Encode:
@@ -128,12 +142,12 @@ class NlfGaussianModel(L.LightningModule):
         local_feats: Local Features sampled at Gaussian centers (B, N, C_local)
         gaussian_3d: Gaussian 3D Coordinates (B, N, 3)
         """
-        B_feats, C_local, Hf, Wf = feats.shape
+        B_feats = feat_for_id.shape[0]
         assert B == B_feats, "Batch size mismatch between image and features"
 
         with grad_ctx:
             if self.use_identity_encoder:
-                z_id = self.identity_encoder(feature_map=feats)  # (1, D)
+                z_id = self.identity_encoder(feature_map=feat_for_id)  # (1, D)
             else:
                 z_id = None
 
@@ -153,11 +167,26 @@ class NlfGaussianModel(L.LightningModule):
                 -1
             )  # (1, N, C_local)
 
-        feat_size = feats.shape[-2:]  # (Hf, Wf)
+        feat_size = feat_for_id.shape[-2:]  # (Hf, Wf)
         self._maybe_dump_local_feats(subject, local_feats, centers2d, (H, W), feat_size)
+
+        if not self._shape_debug_logged:
+            if isinstance(feats, dict):
+                fmap_shapes = {k: tuple(v.shape) for k, v in feats.items()}
+                self._logger.info(f"FPN feature map shapes: {fmap_shapes}")
+                self._logger.info(
+                    f"Per-level sampled feature shapes: {self.avatar_estimator.last_sampled_level_shapes}"
+                )
+            self._logger.info(f"Concatenated local_feats shape: {tuple(local_feats.shape)}")
+            self._logger.info(f"Decoder expected input dim: {self.decoder.in_dim}")
+            assert local_feats.shape[-1] == self.decoder.in_dim, (
+                f"Local feature dim {local_feats.shape[-1]} != decoder.in_dim {self.decoder.in_dim}"
+            )
+            self._shape_debug_logged = True
 
         # Free large intermediates early to reduce peak VRAM before decoding
         del feats
+        del feat_for_id
         del img_uint8
 
         """
