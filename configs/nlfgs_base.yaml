@@ -8,7 +8,7 @@ data:
   smplx_root: data/THuman_2.0_smplx_paras
   num_views: 4
   template_path: models/avatar_template.ply
-  image_size: [512, 512]  # [W, H]
+  image_size: [512, 512] # [W, H]
   augmentation:
     enabled: True
     brightness: 0.1
@@ -24,11 +24,11 @@ data:
     save_once_per_subject: True
 
 camera:
-  image_size: [512, 512]  # [W, H]
-  distance: 1.5          # Camera distance from origin
-  yfov_deg: 45.0         # Vertical field of view in degrees
-  up: [0.0, 1.0, 0.0]    # Default up vector
-  viewpoints:            # Direction vectors for each canonical view
+  image_size: [512, 512] # [W, H]
+  distance: 1.5 # Camera distance from origin
+  yfov_deg: 45.0 # Vertical field of view in degrees
+  up: [0.0, 1.0, 0.0] # Default up vector
+  viewpoints: # Direction vectors for each canonical view
     front: [0.0, 0.0, 1.0]
     back: [0.0, 0.0, -1.0]
     left: [-1.0, 0.0, 0.0]
@@ -39,13 +39,22 @@ nlf:
   use_half: True
   latent_dim: 512
 
+backbone:
+  use_resnet_fpn: true
+  fpn_levels: ["p2", "p3", "p4"]
+  fpn_out_channels: 256
+  resnet50_weights_path: models/torchvision/resnet50-0676ba61.pth
+
+model:
+  local_feature_dim: 768
+
 identity_encoder:
   latent_dim: 64
   use_flag: False
 
 avatar:
   template:
-    mode: default       # options: default | generate | test
+    mode: default # options: default | generate | test
     path: models/avatar_template.ply
     cano_mesh_path: models/smplx/smplx_uv.obj
     anim_mesh_path: tmp/output_smplx_mesh.ply
@@ -56,43 +65,34 @@ avatar:
       - [0.2, 0.2, 0.6]
       - [0.3333333333, 0.3333333333, 0.3333333333]
 
-
 decoder:
-  in_dim: 512  # local feature dim
+  in_dim: 768 # local feature dim
   hidden: 256
   sh_degree: 3
-  out_dim: 56 # scale3 + rot4 + opacity1 + sh(degree 3), sh param = 3*(degree + 1)^2 = 48; total = 3 + 4 + 1 + 48 = 56
-  scale_min: 1.0e-6     # lower bound for Gaussian scales
-  scale_max: 1.0e-3     # upper bound for Gaussian scales
-  alpha_min: 0.0        # lower bound for opacity
-  alpha_max: 1.0        # upper bound for opacity
-  rot_min: -1.0         # pre-normalization lower bound for quaternion components
-  rot_max: 1.0          # pre-normalization upper bound for quaternion components
-  sh_min: -1.0          # lower bound for SH coefficients
-  sh_max: 1.0           # upper bound for SH coefficients
+  out_dim: 56 # scale3 + rot4 + opacity1 + sh(degree 3)
+  scale_min: 1.0e-6 # lower bound for Gaussian scales
+  scale_max: 1.0e-3 # upper bound for Gaussian scales
+  alpha_min: 0.0 # lower bound for opacity
+  alpha_max: 1.0 # upper bound for opacity
+  rot_min: -1.0 # pre-normalization lower bound for quaternion components
+  rot_max: 1.0 # pre-normalization upper bound for quaternion components
+  sh_min: -1.0 # lower bound for SH coefficients
+  sh_max: 1.0 # upper bound for SH coefficients
 
 train:
   accelerator: cpu
   batch_size: 4
   num_workers: 2
   epochs: 1
-  # Optional: fraction of data for validation split (0.0 disables val)
-  val_ratio: 0.0
+  val_ratio: 0.0 # Optional: fraction of data for validation split (0.0 disables val)
 
-analysis:
-  dump_local_feats: false     # set true to save local_feats and collision_data tensors
-  dump_collision_data: true   # also write collision_data_<subject>.pt (centers2d + sizes)
-  dump_subject: "0001"        # subject ID to dump; null means dump every subject
-  dump_dir: output/analysis   # directory where .pt files are written
-
-train:
   # Optimizer & scheduler settings
   lr: 0.0001
   weight_decay: 0.0
   betas: [0.9, 0.99]
   eps: 1.0e-8
-  warmup_ratio: 0.05  # fraction of total steps used for linear warmup
-  scheduler: cosine   # options: cosine
+  warmup_ratio: 0.05 # fraction of total steps used for linear warmup
+  scheduler: cosine # options: cosine
 
   # Loss weights
   weight_rgb: 1.0
@@ -102,5 +102,11 @@ train:
   weight_perceptual: 0.0
   weight_scale_reg: 0.0
   weight_opacity_reg: 0.0
-  weight_silhouette: 0.0  # Silhouette loss: penalizes mismatch between rendered and GT mask
+  weight_silhouette: 0.0 # Silhouette loss: penalizes mismatch between rendered and GT mask
   weight_multiview_consistency: 0.0
+
+analysis:
+  dump_local_feats: false # set true to save local_feats and collision_data tensors
+  dump_collision_data: true # also write collision_data_<subject>.pt (centers2d + sizes)
+  dump_subject: "0001" # subject ID to dump; null means dump every subject
+  dump_dir: output/analysis # directory where .pt files are written

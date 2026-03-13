@@ -22,7 +22,7 @@ class GaussianDecoder(nn.Module):
         dec_cfg = cfg.get("decoder", {})
 
         self.debug = debug
-        self.in_dim = int(dec_cfg.get("in_dim", 512))
+        self.in_dim = int(dec_cfg.get("in_dim", cfg.get("model", {}).get("local_feature_dim", 512)))
         self.hidden = int(dec_cfg.get("hidden", 256))
         self.out_dim = int(dec_cfg.get("out_dim", 56))
         self.z_dim = int(cfg.get("identity_encoder", {}).get("latent_dim", 64))
