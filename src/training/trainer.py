@@ -125,15 +125,10 @@ class NlfGaussianModel(L.LightningModule):
             gt_images = img_float
             del img_float
 
-        # Normalize backbone features per spatial location across channels.
+        # Keep raw backbone feature magnitudes.
         if isinstance(feats, dict):
-            feats = {
-                level: torch.nn.functional.normalize(f.float(), dim=1, eps=1e-6).to(f.dtype)
-                for level, f in feats.items()
-            }
             feat_for_id = next(iter(feats.values()))
         else:
-            feats = torch.nn.functional.normalize(feats.float(), dim=1, eps=1e-6).to(feats.dtype)
             feat_for_id = feats
 
         """

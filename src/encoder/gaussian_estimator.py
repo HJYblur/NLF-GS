@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from collections import OrderedDict
 
 from encoder.avatar_template import AvatarTemplate
 
@@ -18,6 +19,12 @@ class AvatarGaussianEstimator(nn.Module):
     @property
     def template(self) -> AvatarTemplate:
         return self._avatar
+
+    @staticmethod
+    def _ordered_levels(feature_maps):
+        if isinstance(feature_maps, OrderedDict):
+            return list(feature_maps.keys())
+        return sorted(feature_maps.keys())
 
     def compute_gaussian_coord2d(self, feature_map, vertices2d, img_shape: tuple = None):
         B = feature_map.shape[0]
@@ -142,7 +149,8 @@ class AvatarGaussianEstimator(nn.Module):
         x = x.clamp(0, W_img - 1)
         y = y.clamp(0, H_img - 1)
 
-        depth_samples = depth_map[torch.arange(depth_map.shape[0])[:, None], y, x]
+        batch_idx = torch.arange(depth_map.shape[0], device=device)[:, None]
+        depth_samples = depth_map[batch_idx, y, x]
         center_depth = centers3d[..., 2]
         visible = center_depth <= (depth_samples + depth_eps)
         visible = visible | torch.isinf(depth_samples)
@@ -162,8 +170,8 @@ class AvatarGaussianEstimator(nn.Module):
         else:
             H_img, W_img = Hf, Wf
 
-        x = centers2d[..., 0] / (W_img - 1) * 2 - 1
-        y = centers2d[..., 1] / (H_img - 1) * 2 - 1
+        x = centers2d[..., 0] / max(1, (W_img - 1)) * 2 - 1
+        y = centers2d[..., 1] / max(1, (H_img - 1)) * 2 - 1
         grid = torch.stack([x, y], dim=-1).unsqueeze(1)
 
         if grid.dtype != feature_map.dtype:
@@ -175,7 +183,8 @@ class AvatarGaussianEstimator(nn.Module):
     def feature_sample_multiscale(self, feature_maps, vertices2d, img_shape: tuple = None, centers2d: torch.Tensor = None):
         per_level = []
         sampled_shapes = {}
-        for level, fmap in feature_maps.items():
+        for level in self._ordered_levels(feature_maps):
+            fmap = feature_maps[level]
             sampled = self.feature_sample(fmap, vertices2d, img_shape=img_shape, centers2d=centers2d)
             sampled_shapes[level] = tuple(sampled.shape)
             per_level.append(sampled)
