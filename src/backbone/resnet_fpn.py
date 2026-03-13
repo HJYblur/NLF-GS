@@ -58,8 +58,10 @@ class FrozenResNet50FPNExtractor(nn.Module):
         return self
 
     def forward(self, image: torch.Tensor) -> OrderedDict:
-        with torch.no_grad():
-            feats = self.backbone(image)
+        # Keep the frozen extractor in fp32 to avoid AMP/mixed-precision dtype
+        # mismatches (e.g. half inputs with float32 weights during validation).
+        with torch.no_grad(), torch.autocast(device_type=image.device.type, enabled=False):
+            feats = self.backbone(image.float())
 
         selected = OrderedDict()
         for level in self.selected_levels:
