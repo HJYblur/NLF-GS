@@ -95,6 +95,7 @@ def main():
         nlf_checkpoint,
         use_resnet_fpn=use_resnet_fpn,
         fpn_levels=fpn_levels,
+        resnet_weights_path=backbone_cfg.get("resnet50_weights_path"),
     )
     logger.info("Backbone Adapter initialized")
 

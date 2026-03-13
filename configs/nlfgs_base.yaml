@@ -43,6 +43,7 @@ backbone:
   use_resnet_fpn: true
   fpn_levels: ["p2", "p3", "p4"]
   fpn_out_channels: 256
+  resnet50_weights_path: models/torchvision/resnet50-0676ba61.pth
 
 model:
   local_feature_dim: 768

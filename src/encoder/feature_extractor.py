@@ -8,7 +8,13 @@ from backbone.resnet_fpn import FrozenResNet50FPNExtractor
 class FeatureExtractor:
     """Feature extractor exposing either NLF features or frozen ResNet50-FPN features."""
 
-    def __init__(self, nlf_model, use_resnet_fpn: bool = False, fpn_levels=None):
+    def __init__(
+        self,
+        nlf_model,
+        use_resnet_fpn: bool = False,
+        fpn_levels=None,
+        resnet_weights_path: Optional[str] = None,
+    ):
         if not hasattr(nlf_model, "detector"):
             raise AttributeError("nlf_model must expose detector")
 
@@ -17,7 +23,10 @@ class FeatureExtractor:
         self.fpn_extractor: Optional[FrozenResNet50FPNExtractor] = None
 
         if self.use_resnet_fpn:
-            self.fpn_extractor = FrozenResNet50FPNExtractor(selected_levels=fpn_levels or ("p2", "p3", "p4"))
+            self.fpn_extractor = FrozenResNet50FPNExtractor(
+                selected_levels=fpn_levels or ("p2", "p3", "p4"),
+                backbone_weights_path=resnet_weights_path,
+            )
         else:
             if not hasattr(nlf_model, "crop_model") or not hasattr(
                 nlf_model.crop_model, "backbone"
