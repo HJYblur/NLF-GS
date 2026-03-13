@@ -156,16 +156,8 @@ class NlfGaussianModel(L.LightningModule):
                 )
             )  # (B, N, C_local), (B, N), (B, N, 3), (B, N, 2)
         local_feats_prefusion = local_feats
-            
-        # self.debug3d(gaussian_3d[0], subject)
 
-        if local_feats.shape[0] > 1:
-            weight_sum = view_weights.sum(dim=0, keepdim=True).clamp_min(1e-6)
-            local_feats = (local_feats * view_weights.unsqueeze(-1)).sum(
-                dim=0, keepdim=True
-            ) / weight_sum.unsqueeze(
-                -1
-            )  # (1, N, C_local)
+        # self.debug3d(gaussian_3d[0], subject)
 
         feat_size = feat_for_id.shape[-2:]  # (Hf, Wf)
         self._maybe_dump_local_feats(
@@ -197,86 +189,65 @@ class NlfGaussianModel(L.LightningModule):
         del feat_for_id
         del img_uint8
 
-        """
-        Decode:
-        gaussian_params: Fused gaussian Params(N, C_params)
-        """
+        assert gaussian_3d.shape[0] == B, "Mismatch between gaussian_3d and number of views"
 
-        gaussian_params = self.decoder(local_feats, z_id)
-        # # overwrite randomly with either (1,0,0), (0,1,0), (0,0,1)
-        # N, k = gaussian_params['sh'].shape
-        # idx = torch.randint(0, k, (N,), device=gaussian_params['sh'].device)
-        # gaussian_params['sh'] = torch.nn.functional.one_hot(idx, num_classes=k).float()
-        # gaussian_params['alpha'][:] = 1.0
-
-        # Log Gaussian parameter statistics to track which dimensions are active
-        if stage == "train" and batch_idx % 10 == 0:
-            self._log_gaussian_param_stats(gaussian_params)
-
-        # Debug check:
-        if self.debug:
-            for k, v in gaussian_params.items():
-                self._logger.debug(f"Decoded gaussian_params[{k}] shape: {v.shape}")
-
-        """
-        Render and Loss Computation:
-        1. For every view, use the gaussian_params and gaussian_3d to reconstruct an avatar
-        2. Render from gaussian_params and compute losses
-        3. Return a loss with gradient graph for optimizer step
-        """
-
-        assert (
-            gaussian_3d.shape[0] == self.num_views
-        ), "Mismatch between gaussian_3d and num_views"
-
-        if self.debug and stage == "train":
-            # Use gaussian_params and gaussian_3ds to generate a .ply file as the reconstruction.
-            new_avatar = reconstruct_gaussian_avatar_as_ply(
-                xyz=gaussian_3d[0],
-                gaussian_params=gaussian_params,
-                template=self.template.load_avatar_template(mode="test"),
-                output_path=f"output/{subject}/{subject}_debug.ply",
-            )
-
+        per_view_losses = []
         save_path = (
             Path(get_config().get("render", {}).get("save_path", "output"))
             / subject
         ) if self._is_test_render_batch(subject) else None
-        rendered_imgs = self.renderer.render(
-            gaussian_3d=gaussian_3d[0],
-            gaussian_params=gaussian_params,
-            view_name=view_names,
-            save_folder_path=save_path,
-        )  # (V, H, W, 3)
-        
-        # Updated condition for proxy loss, we should use real loss for validation as well.
-        if stage == "train" and torch.is_grad_enabled() and not rendered_imgs.requires_grad:
-            # Renderer returned a non-differentiable tensor while gradients are expected;
-            # fall back to proxy loss to keep optimization stable.
-            rendered_imgs = None
 
-        # Free combined inputs post-decoding
+        for view_idx, view_name in enumerate(view_names):
+            local_feats_view = local_feats[view_idx : view_idx + 1]
+            z_id_view = None if z_id is None else z_id
+            if z_id is not None and z_id.shape[0] == B:
+                z_id_view = z_id[view_idx : view_idx + 1]
+
+            gaussian_params = self.decoder(local_feats_view, z_id_view)
+
+            if stage == "train" and batch_idx % 10 == 0:
+                self._log_gaussian_param_stats(gaussian_params)
+                self._register_gaussian_param_grad_hooks(gaussian_params, batch_idx)
+
+            if self.debug and stage == "train" and view_idx == 0:
+                reconstruct_gaussian_avatar_as_ply(
+                    xyz=gaussian_3d[view_idx],
+                    gaussian_params=gaussian_params,
+                    template=self.template.load_avatar_template(mode="test"),
+                    output_path=f"output/{subject}/{subject}_debug.ply",
+                )
+
+            rendered_imgs = self.renderer.render(
+                gaussian_3d=gaussian_3d[view_idx],
+                gaussian_params=gaussian_params,
+                view_name=view_name,
+                save_folder_path=save_path,
+            )
+
+            if stage == "train" and torch.is_grad_enabled() and not rendered_imgs.requires_grad:
+                per_view_losses.append(self._proxy_regularization_loss(gaussian_params))
+                continue
+
+            pred = rendered_imgs.permute(0, 3, 1, 2)
+            gt = gt_images[view_idx : view_idx + 1]
+            mask = None if masks_float is None else masks_float[view_idx : view_idx + 1]
+            per_view_losses.append(
+                self.loss_fn(
+                    pred,
+                    gt,
+                    mask,
+                    gaussian_params=gaussian_params,
+                    gaussian_3d=gaussian_3d[view_idx : view_idx + 1],
+                )
+            )
+
         del local_feats
         del z_id
 
-        if rendered_imgs is not None:
-            pred = rendered_imgs.permute(0, 3, 1, 2)  # (B, 3, H, W)
-            gt = gt_images # .to(self.device)  # Move GT back to GPU for loss
-            
-            # Register hooks to capture gradients on gaussian_params to see which are most affected by loss
-            if stage == "train" and batch_idx % 10 == 0:
-                self._register_gaussian_param_grad_hooks(gaussian_params, batch_idx)
-            
-            loss_dict = self.loss_fn(
-                pred,
-                gt,
-                masks_float,
-                gaussian_params=gaussian_params,
-                gaussian_3d=gaussian_3d,
-            )
-        else:
-            print("ERROROROROROROR SHOULD NEVER APPEAR!!!")
-            loss_dict = self._proxy_regularization_loss(gaussian_params)
+        loss_dict = {
+            key: torch.stack([ld[key] for ld in per_view_losses]).mean()
+            for key in per_view_losses[0]
+        }
 
         del gaussian_3d
         return loss_dict
