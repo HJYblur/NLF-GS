@@ -97,14 +97,14 @@ train:
 
   # Loss weights
   weight_rgb: 1.0
-  weight_l1: 0.8
-  weight_l2: 1.0
-  weight_masked_ssim: 0.2
-  weight_perceptual: 0.0
-  weight_scale_reg: 0.0
-  weight_opacity_reg: 0.0
-  weight_silhouette: 0.0 # Silhouette loss: penalizes mismatch between rendered and GT mask
-  weight_multiview_consistency: 0.0
+  weight_l1: 1.0
+  weight_l2: 0.25
+  weight_masked_ssim: 0.1
+  weight_perceptual: 0.05
+  weight_scale_reg: 0.005
+  weight_opacity_reg: 0.01
+  weight_silhouette: 0.1 # Silhouette loss: penalizes mismatch between rendered and GT mask
+  weight_multiview_consistency: 0.05
 
 analysis:
   dump_local_feats: false # set true to save local_feats and collision_data tensors

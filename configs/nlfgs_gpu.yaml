@@ -7,7 +7,7 @@ data:
   raw: data
   root: processed
   smplx_root: data/THuman_2.0_smplx_paras
-  num_views: 4
+  num_views: 1
   template_path: models/avatar_template.ply
   image_size: [512, 512] # [W, H]
   augmentation:
@@ -83,7 +83,7 @@ decoder:
 train:
   # Base settings
   accelerator: cuda
-  train_decoder_only: true # true: freeze backbone and train decoder only; false: also train ResNet-FPN
+  train_decoder_only: false # true: freeze backbone and train decoder only; false: also train ResNet-FPN
   precision: 16-mixed # Use AMP (fp16) to halve VRAM on activations & weights
   batch_size: 4 # Must match num_views (4 views fused per subject)
   num_workers: 2
@@ -99,21 +99,20 @@ train:
   scheduler: cosine
 
   # Loss weights
-  weight_rgb: 1.0
-  weight_l1: 0.5
-  weight_l2: 0.8
-  weight_masked_ssim: 0.2
-  weight_perceptual: 0.3
-  weight_scale_reg: 0.01
-  weight_opacity_reg: 0.05
+  weight_l1: 1.0
+  weight_l2: 0.25
+  weight_masked_ssim: 0.1
+  weight_perceptual: 0.05
+  weight_scale_reg: 0.005
+  weight_opacity_reg: 0.01
   weight_silhouette: 0.2 # Silhouette loss: penalizes mismatch between rendered and GT mask
-  weight_multiview_consistency: 0.0
+  weight_multiview_consistency: 0.05
 
   # GPU memory profiling (logs peak VRAM per section)
   profile_gpu: False
 
 analysis:
-  dump_local_feats: true # set true to save local_feats and collision_data tensors
+  dump_local_feats: false # set true to save local_feats and collision_data tensors
   dump_collision_data: true # also write collision_data_<subject>.pt (centers2d + sizes)
   dump_subject: "0007" # subject ID to dump; null means dump every subject
   dump_dir: tmp/analysis # directory where .pt files are written
