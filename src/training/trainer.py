@@ -8,7 +8,7 @@ import math
 import torch
 from torch.utils.data import DataLoader
 import lightning as L
-from encoder.nlf_backbone_adapter import NLFBackboneAdapter
+from encoder.feature_extractor import FeatureExtractor
 from encoder.gaussian_estimator import AvatarGaussianEstimator
 from encoder.identity_encoder import IdentityEncoder
 from encoder.avatar_template import AvatarTemplate
@@ -22,7 +22,7 @@ from avatar_utils.config import get_config
 class NlfGaussianModel(L.LightningModule):
     def __init__(
         self,
-        backbone_adapter: NLFBackboneAdapter,
+        backbone_adapter: FeatureExtractor,
         identity_encoder: IdentityEncoder,
         decoder: GaussianDecoder,
         renderer: GsplatRenderer,
@@ -36,6 +36,8 @@ class NlfGaussianModel(L.LightningModule):
             get_config().get("identity_encoder", {}).get("use_flag", True)
         )
         self.num_views = int(get_config().get("data", {}).get("num_views", 1))
+        if self.num_views not in (1, 4):
+            raise ValueError(f"data.num_views must be 1 or 4, got {self.num_views}")
         aug_cfg = get_config().get("data", {}).get("augmentation", {})
         self._save_augmented_inputs = bool(aug_cfg.get("save_preview", False))
         self._save_augmented_once_per_subject = bool(aug_cfg.get("save_once_per_subject", True))
@@ -48,6 +50,10 @@ class NlfGaussianModel(L.LightningModule):
         self.renderer = renderer
         self.loss_fn = LossFunctions()    
         self.train_decoder_only = train_decoder_only
+
+        # Keep backbone frozen only in decoder-only mode.
+        if hasattr(self.backbone, "set_resnet_fpn_frozen"):
+            self.backbone.set_resnet_fpn_frozen(self.train_decoder_only)
 
         # Read optimizer & scheduler settings from config and save as hyperparameters
         train_cfg = get_config().get("train", {})
@@ -71,7 +77,14 @@ class NlfGaussianModel(L.LightningModule):
         if self.train_decoder_only:
             self.freeze_encoder()
             self._logger.info("Frozen encoder parameters.")
+
+        # Feature-dump settings for PCA analysis
+        analysis_cfg = get_config().get("analysis", {})
+        self._dump_local_feats = bool(analysis_cfg.get("dump_local_feats", False))
+        self._dump_subject = analysis_cfg.get("dump_subject", None)  # None → dump all
+        self._dump_dir = Path(str(analysis_cfg.get("dump_dir", "output/analysis")))
             
+        self._shape_debug_logged = False
         self._logger.info(f"Debug mode: {self.debug}")
 
     def training_step(self, batch: Dict[str, Any], batch_idx: int):
@@ -107,14 +120,22 @@ class NlfGaussianModel(L.LightningModule):
                         image=img_float[v_idx : v_idx + 1], use_half=True
                     )
                     feat_list.append(f_v)
-                feats = torch.cat(feat_list, dim=0)  # (B, C, Hf, Wf)
+                if isinstance(feat_list[0], dict):
+                    feats = {
+                        level: torch.cat([fv[level] for fv in feat_list], dim=0)
+                        for level in feat_list[0].keys()
+                    }
+                else:
+                    feats = torch.cat(feat_list, dim=0)  # (B, C, Hf, Wf)
                 del feat_list
-            # # Stash GT images on CPU while encoder/decoder run; bring back for loss later
             gt_images = img_float
             del img_float
-            
-        # Normalize backbone features per spatial location across channels.
-        feats = torch.nn.functional.normalize(feats.float(), dim=1, eps=1e-6).to(feats.dtype)
+
+        # Keep raw backbone feature magnitudes.
+        if isinstance(feats, dict):
+            feat_for_id = next(iter(feats.values()))
+        else:
+            feat_for_id = feats
 
         """
         Encode:
@@ -122,126 +143,241 @@ class NlfGaussianModel(L.LightningModule):
         local_feats: Local Features sampled at Gaussian centers (B, N, C_local)
         gaussian_3d: Gaussian 3D Coordinates (B, N, 3)
         """
-        B_feats, C_local, Hf, Wf = feats.shape
+        B_feats = feat_for_id.shape[0]
         assert B == B_feats, "Batch size mismatch between image and features"
 
         with grad_ctx:
             if self.use_identity_encoder:
-                z_id = self.identity_encoder(feature_map=feats)  # (1, D)
+                z_id = self.identity_encoder(feature_map=feat_for_id)  # (1, D)
             else:
                 z_id = None
 
-            local_feats, view_weights, gaussian_3d = (
+            local_feats, view_weights, gaussian_3d, centers2d = (
                 self.avatar_estimator.feature_sample_with_visibility(
                     feats, vertices3d, vertices2d, img_shape=(H, W)
                 )
-            )  # (B, N, C_local), (B, N), (B, N, 3)
-            
+            )  # (B, N, C_local), (B, N), (B, N, 3), (B, N, 2)
+        local_feats_prefusion = local_feats
+        # Use all views for supervision; `data.num_views` only controls
+        # whether decoder input is per-view (1) or fused (4).
+        if self.num_views == 4:
+            weights = view_weights.clamp_min(0.0)
+            weights_sum = weights.sum(dim=0, keepdim=True).clamp_min(1e-8)
+            weights = weights / weights_sum
+            local_feats = (local_feats * weights.unsqueeze(-1)).sum(dim=0, keepdim=True)
+            gaussian_3d_decode = gaussian_3d[0:1]
+            z_id_decode = None if z_id is None else z_id.mean(dim=0, keepdim=True)
+        else:
+            gaussian_3d_decode = gaussian_3d
+            z_id_decode = z_id
+
+
         # self.debug3d(gaussian_3d[0], subject)
 
-        if local_feats.shape[0] > 1:
-            weight_sum = view_weights.sum(dim=0, keepdim=True).clamp_min(1e-6)
-            local_feats = (local_feats * view_weights.unsqueeze(-1)).sum(
-                dim=0, keepdim=True
-            ) / weight_sum.unsqueeze(
-                -1
-            )  # (1, N, C_local)
+        feat_size = feat_for_id.shape[-2:]  # (Hf, Wf)
+        self._maybe_dump_local_feats(
+            subject,
+            local_feats,
+            centers2d,
+            (H, W),
+            feat_size,
+            local_feats_prefusion,
+            view_weights,
+        )
+
+        if not self._shape_debug_logged:
+            if isinstance(feats, dict):
+                fmap_shapes = {k: tuple(v.shape) for k, v in feats.items()}
+                self._logger.info(f"FPN feature map shapes: {fmap_shapes}")
+                self._logger.info(
+                    f"Per-level sampled feature shapes: {self.avatar_estimator.last_sampled_level_shapes}"
+                )
+            self._logger.info(f"Concatenated local_feats shape: {tuple(local_feats.shape)}")
+            self._logger.info(f"Decoder expected input dim: {self.decoder.in_dim}")
+            assert local_feats.shape[-1] == self.decoder.in_dim, (
+                f"Local feature dim {local_feats.shape[-1]} != decoder.in_dim {self.decoder.in_dim}"
+            )
+            self._shape_debug_logged = True
 
         # Free large intermediates early to reduce peak VRAM before decoding
         del feats
+        del feat_for_id
         del img_uint8
 
-        """
-        Decode:
-        gaussian_params: Fused gaussian Params(N, C_params)
-        """
+        assert gaussian_3d.shape[0] == B, "Mismatch between gaussian_3d and number of views"
 
-        gaussian_params = self.decoder(local_feats, z_id)
-        # # overwrite randomly with either (1,0,0), (0,1,0), (0,0,1)
-        # N, k = gaussian_params['sh'].shape
-        # idx = torch.randint(0, k, (N,), device=gaussian_params['sh'].device)
-        # gaussian_params['sh'] = torch.nn.functional.one_hot(idx, num_classes=k).float()
-        # gaussian_params['alpha'][:] = 1.0
-
-        # Log Gaussian parameter statistics to track which dimensions are active
-        if stage == "train" and batch_idx % 10 == 0:
-            self._log_gaussian_param_stats(gaussian_params)
-
-        # Debug check:
-        if self.debug:
-            for k, v in gaussian_params.items():
-                self._logger.debug(f"Decoded gaussian_params[{k}] shape: {v.shape}")
-
-        """
-        Render and Loss Computation:
-        1. For every view, use the gaussian_params and gaussian_3d to reconstruct an avatar
-        2. Render from gaussian_params and compute losses
-        3. Return a loss with gradient graph for optimizer step
-        """
-
-        assert (
-            gaussian_3d.shape[0] == self.num_views
-        ), "Mismatch between gaussian_3d and num_views"
-
-        if self.debug and stage == "train":
-            # Use gaussian_params and gaussian_3ds to generate a .ply file as the reconstruction.
-            new_avatar = reconstruct_gaussian_avatar_as_ply(
-                xyz=gaussian_3d[0],
-                gaussian_params=gaussian_params,
-                template=self.template.load_avatar_template(mode="test"),
-                output_path=f"output/{subject}/{subject}_debug.ply",
-            )
-
+        per_view_losses = []
         save_path = (
             Path(get_config().get("render", {}).get("save_path", "output"))
             / subject
         ) if self._is_test_render_batch(subject) else None
-        rendered_imgs = self.renderer.render(
-            gaussian_3d=gaussian_3d[0],
-            gaussian_params=gaussian_params,
-            view_name=view_names,
-            save_folder_path=save_path,
-        )  # (V, H, W, 3)
-        
-        # Updated condition for proxy loss, we should use real loss for validation as well.
-        if stage == "train" and torch.is_grad_enabled() and not rendered_imgs.requires_grad:
-            # Renderer returned a non-differentiable tensor while gradients are expected;
-            # fall back to proxy loss to keep optimization stable.
-            rendered_imgs = None
 
-        # Free combined inputs post-decoding
+        if self.num_views == 4:
+            gaussian_params_fused = self.decoder(local_feats, z_id_decode)
+            gaussian_3d_fused = gaussian_3d_decode[0]
+
+            if stage == "train" and batch_idx % 10 == 0:
+                self._log_gaussian_param_stats(gaussian_params_fused)
+                self._register_gaussian_param_grad_hooks(gaussian_params_fused, batch_idx)
+
+            if self.debug and stage == "train":
+                reconstruct_gaussian_avatar_as_ply(
+                    xyz=gaussian_3d_fused,
+                    gaussian_params=gaussian_params_fused,
+                    template=self.template.load_avatar_template(mode="test"),
+                    output_path=f"output/{subject}/{subject}_debug.ply",
+                )
+
+            for view_idx, view_name in enumerate(view_names):
+                rendered_imgs = self.renderer.render(
+                    gaussian_3d=gaussian_3d_fused,
+                    gaussian_params=gaussian_params_fused,
+                    view_name=view_name,
+                    save_folder_path=save_path,
+                )
+
+                if stage == "train" and torch.is_grad_enabled() and not rendered_imgs.requires_grad:
+                    per_view_losses.append(self._proxy_regularization_loss(gaussian_params_fused))
+                    continue
+
+                pred = rendered_imgs.permute(0, 3, 1, 2)
+                gt = gt_images[view_idx : view_idx + 1]
+                mask = None if masks_float is None else masks_float[view_idx : view_idx + 1]
+                per_view_losses.append(
+                    self.loss_fn(
+                        pred,
+                        gt,
+                        mask,
+                        gaussian_params=gaussian_params_fused,
+                        gaussian_3d=gaussian_3d_fused.unsqueeze(0),
+                    )
+                )
+        else:
+            for view_idx, view_name in enumerate(view_names):
+                local_feats_view = local_feats[view_idx : view_idx + 1]
+                z_id_view = None if z_id_decode is None else z_id_decode
+                if z_id_decode is not None and z_id_decode.shape[0] == B:
+                    z_id_view = z_id_decode[view_idx : view_idx + 1]
+
+                gaussian_params_view = self.decoder(local_feats_view, z_id_view)
+                gaussian_3d_view = gaussian_3d_decode[view_idx]
+
+                if stage == "train" and batch_idx % 10 == 0 and view_idx == 0:
+                    self._log_gaussian_param_stats(gaussian_params_view)
+                    self._register_gaussian_param_grad_hooks(gaussian_params_view, batch_idx)
+
+                if self.debug and stage == "train" and view_idx == 0:
+                    reconstruct_gaussian_avatar_as_ply(
+                        xyz=gaussian_3d_view,
+                        gaussian_params=gaussian_params_view,
+                        template=self.template.load_avatar_template(mode="test"),
+                        output_path=f"output/{subject}/{subject}_debug.ply",
+                    )
+
+                rendered_imgs = self.renderer.render(
+                    gaussian_3d=gaussian_3d_view,
+                    gaussian_params=gaussian_params_view,
+                    view_name=view_name,
+                    save_folder_path=save_path,
+                )
+
+                if stage == "train" and torch.is_grad_enabled() and not rendered_imgs.requires_grad:
+                    per_view_losses.append(self._proxy_regularization_loss(gaussian_params_view))
+                    continue
+
+                pred = rendered_imgs.permute(0, 3, 1, 2)
+                gt = gt_images[view_idx : view_idx + 1]
+                mask = None if masks_float is None else masks_float[view_idx : view_idx + 1]
+                per_view_losses.append(
+                    self.loss_fn(
+                        pred,
+                        gt,
+                        mask,
+                        gaussian_params=gaussian_params_view,
+                        gaussian_3d=gaussian_3d_view.unsqueeze(0),
+                    )
+                )
         del local_feats
         del z_id
 
-        if rendered_imgs is not None:
-            pred = rendered_imgs.permute(0, 3, 1, 2)  # (B, 3, H, W)
-            gt = gt_images # .to(self.device)  # Move GT back to GPU for loss
-            
-            # Register hooks to capture gradients on gaussian_params to see which are most affected by loss
-            if stage == "train" and batch_idx % 10 == 0:
-                self._register_gaussian_param_grad_hooks(gaussian_params, batch_idx)
-            
-            loss_dict = self.loss_fn(
-                pred,
-                gt,
-                masks_float,
-                gaussian_params=gaussian_params,
-                gaussian_3d=gaussian_3d,
-            )
-        else:
-            print("ERROROROROROROR SHOULD NEVER APPEAR!!!")
-            loss_dict = self._proxy_regularization_loss(gaussian_params)
+        loss_dict = {
+            key: torch.stack([ld[key] for ld in per_view_losses]).mean()
+            for key in per_view_losses[0]
+        }
 
         del gaussian_3d
         return loss_dict
+
+    def _maybe_dump_local_feats(
+        self,
+        subject: str,
+        local_feats: torch.Tensor,
+        centers2d: torch.Tensor,
+        img_size: tuple,
+        feat_size,
+        local_feats_prefusion: torch.Tensor,
+        view_weights: torch.Tensor,
+    ) -> None:
+        """Save local_feats (post-mode processing) to disk for offline PCA analysis.
+
+        Also saves a companion collision-data file containing per-view Gaussian
+        2-D centers in pixel coordinates plus the image/feature-map sizes, used
+        by the projection-collision analysis notebook section.
+
+        Enabled only when ``analysis.dump_local_feats: true`` in the config.
+        If ``analysis.dump_subject`` is set, only that subject is dumped.
+        """
+        if not self._dump_local_feats:
+            return
+        if self._dump_subject is not None and str(subject) != str(self._dump_subject):
+            return
+
+        self._dump_dir.mkdir(parents=True, exist_ok=True)
+
+        out_path = self._dump_dir / f"local_feats_{subject}.pt"
+        torch.save(local_feats.detach().cpu(), out_path)
+        self._logger.info(f"Dumped local_feats for subject {subject} → {out_path}")
+
+        # Companion file for pre/post fusion quality analysis
+        fusion_path = self._dump_dir / f"fusion_data_{subject}.pt"
+        torch.save(
+            {
+                "local_feats_prefusion": local_feats_prefusion.detach().cpu(),  # (B, N, C)
+                "view_weights": view_weights.detach().cpu(),  # (B, N)
+                "local_feats_postfusion": local_feats.detach().cpu(),  # (1, N, C) fused or (B, N, C) per-view
+                "centers2d": centers2d.detach().cpu(),  # (B, N, 2)
+            },
+            fusion_path,
+        )
+        self._logger.info(f"Dumped fusion_data for subject {subject} → {fusion_path}")
+
+        # Companion file for projection-collision analysis
+        H, W = int(img_size[0]), int(img_size[1])
+        Hf, Wf = int(feat_size[-2]), int(feat_size[-1])
+        collision_path = self._dump_dir / f"collision_data_{subject}.pt"
+        torch.save(
+            {
+                "centers2d": centers2d.detach().cpu(),  # (B, N, 2) pixel coords
+                "img_size": (H, W),
+                "feat_size": (Hf, Wf),
+            },
+            collision_path,
+        )
+        self._logger.info(f"Dumped collision_data for subject {subject} → {collision_path}")
 
     def freeze_encoder(self):
         for p in self.identity_encoder.parameters():
             p.requires_grad = False
 
     def configure_optimizers(self):
+        trainable_params = list(self.decoder.parameters())
+        if not self.train_decoder_only:
+            trainable_params += [
+                p for p in self.backbone.parameters() if p.requires_grad
+            ]
+
         optimizer = torch.optim.AdamW(
-            self.decoder.parameters(),
+            trainable_params,
             lr=float(self.hparams.lr),
             weight_decay=float(self.hparams.wd),
             betas=tuple(self.hparams.betas) if isinstance(self.hparams.betas, (list, tuple)) else (0.9, 0.99),

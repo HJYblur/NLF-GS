@@ -11,6 +11,7 @@ class LossFunctions(nn.Module):
         self.weight_rgb = (
             weight_rgb if weight_rgb is not None else float(train_cfg.get("weight_rgb", 1.0))
         )
+        self.weight_l1 = float(train_cfg.get("weight_l1", 0.0))
         self.weight_l2 = float(train_cfg.get("weight_l2", 0.0))
         self.weight_masked_ssim = float(train_cfg.get("weight_masked_ssim", 0.0))
         self.weight_perceptual = float(train_cfg.get("weight_perceptual", 0.0))
@@ -24,6 +25,15 @@ class LossFunctions(nn.Module):
     def _foreground_mask(self, gt_imgs: torch.Tensor) -> torch.Tensor:
         """Return foreground mask from non-black GT pixels, shape [B,1,H,W]."""
         return (gt_imgs.abs().sum(dim=1, keepdim=True) > 0.0).float()
+
+    def _masked_l1(
+        self, pred_imgs: torch.Tensor, gt_imgs: torch.Tensor, mask: torch.Tensor
+    ) -> torch.Tensor:
+        mask3 = mask.expand_as(pred_imgs)
+        valid = mask3.sum()
+        if valid <= 0:
+            return torch.zeros((), device=pred_imgs.device)
+        return (pred_imgs - gt_imgs).abs().mul(mask3).sum() / valid
     
     def _masked_l2(self, pred_imgs: torch.Tensor, gt_imgs: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
         mask3 = mask.expand_as(pred_imgs)
@@ -135,10 +145,10 @@ class LossFunctions(nn.Module):
     def forward(self, pred_imgs, gt_imgs, gt_masks, gaussian_params=None, gaussian_3d=None):
         fg_mask = self._foreground_mask(gt_imgs)
 
-        # l1_loss = self._masked_l1(pred_imgs, gt_imgs, fg_mask)
+        l1_loss = self._masked_l1(pred_imgs, gt_imgs, fg_mask)
         l2_loss = self._masked_l2(pred_imgs, gt_imgs, fg_mask)
-        # masked_ssim_val = self._masked_ssim(pred_imgs, gt_imgs, fg_mask)
-        # perceptual_loss = self._masked_multiscale_perceptual(pred_imgs, gt_imgs, fg_mask)
+        masked_ssim_val = self._masked_ssim(pred_imgs, gt_imgs, fg_mask)
+        perceptual_loss = self._masked_multiscale_perceptual(pred_imgs, gt_imgs, fg_mask)
 
         # Silhouette loss: extract predicted mask from rendered images
         sil_loss = torch.zeros((), device=pred_imgs.device)
@@ -146,35 +156,33 @@ class LossFunctions(nn.Module):
             pred_sil = self._foreground_mask(pred_imgs)  # Extract from PREDICTED images
             sil_loss = self.silhouette_loss(pred_sil, gt_masks)
 
-        # scale_reg, opacity_reg = self.regularization_loss(
-        #     gaussian_params, device=pred_imgs.device
-        # )
-        # multiview_consistency = self.multiview_consistency_loss(
-        #     gaussian_3d, device=pred_imgs.device
-        # )
-
-        photometric = (
-            # self.weight_l1 * l1_loss +
-            self.weight_l2 * l2_loss
-            # + self.weight_masked_ssim * (1 - masked_ssim_val)
-            # + self.weight_perceptual * perceptual_loss
+        scale_reg, opacity_reg = self.regularization_loss(
+            gaussian_params, device=pred_imgs.device
         )
-        final_loss = photometric + self.weight_silhouette * sil_loss
-        # (
-        #     self.weight_rgb * photometric
-        #     + self.weight_scale_reg * scale_reg
-        #     + self.weight_opacity_reg * opacity_reg
-        #     + self.weight_multiview_consistency * multiview_consistency
-        # )
+        multiview_consistency = self.multiview_consistency_loss(
+            gaussian_3d, device=pred_imgs.device
+        )
+
+        ssim_loss = 1 - masked_ssim_val
+        final_loss = (
+            self.weight_l1 * l1_loss
+            + self.weight_l2 * l2_loss
+            + self.weight_masked_ssim * ssim_loss
+            + self.weight_perceptual * perceptual_loss
+            + self.weight_silhouette * sil_loss
+            + self.weight_scale_reg * scale_reg
+            # self.weight_opacity_reg * opacity_reg
+            # self.weight_multiview_consistency * multiview_consistency
+        )
 
         return {
             "loss": final_loss,
-            # "l1": l1_loss,
+            "l1": l1_loss,
             "l2": l2_loss,
             "silhouette": sil_loss,
-            # "masked_ssim": masked_ssim_val,
-            # "perceptual": perceptual_loss,
-            # "scale_reg": scale_reg,
+            "masked_ssim": ssim_loss,
+            "perceptual": perceptual_loss,
+            "scale_reg": scale_reg,
             # "opacity_reg": opacity_reg,
             # "multiview_consistency": multiview_consistency,
         }

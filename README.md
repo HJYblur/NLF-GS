@@ -73,9 +73,9 @@ Training expects a **processed** directory of per-subject folders. Each subject 
 - **`data.root`** (config, default `processed`) should point to a directory containing one folder per subject.
 - Inside each subject folder, images named:  
   `<subject>_front.(png|jpg|jpeg)`, `<subject>_back.*`, `<subject>_left.*`, `<subject>_right.*`
-- Set **`data.num_views`** in config:
-  - `1` — only `front` is loaded.
-  - `4` — `front`, `back`, `left`, `right` (order in `VIEW_ORDER` in `datasets.py`).
+- Set **`data.num_views`** in config to control decoder behavior while still training with all views:
+  - `1` — no feature fusion (decode per view, then compare each rendered view to its own ground truth).
+  - `4` — fuse multi-view features into one Gaussian prediction, then render/compare across all views.
 - **`data.smplx_root`** (config, default `data/THuman_2.0_smplx_params`) should point to a directory containing one folder per subject.
 - Inside each subject folder, a precomputed SMPL-X mesh named `mesh_smplx.obj`.
 
@@ -154,7 +154,7 @@ Important sections:
 
 - **`sys.device`** — `cpu` or `cuda` (or `cuda:0` etc.).
 - **`data.root`** — Directory of processed subject folders (default `processed`).
-- **`data.num_views`** — `1` or `4`.
+- **`data.num_views`** — training mode switch: `1` = per-view decode (no fusion), `4` = fused multi-view decode. Input supervision still uses all canonical views.
 - **`data.augmentation`** — photometric training augmentation settings. Augmentations are synchronized across all views in a sample (same jitter/noise/compression applied to front/back/left/right). You can also save augmented inputs + sampled augmentation parameters with `data.augmentation.save_preview` (written to `<render.save_path>/augmented_inputs/<subject>/`).
 - **`nlf.checkpoint_path`** — Path to the NLF TorchScript file.
 - **`train`** — `accelerator`, `epochs`, `batch_size`, `lr`, `val_ratio`, `weight_rgb`, `weight_ssim`, etc.
@@ -174,7 +174,7 @@ Optional: **`data.image_size`** — `[width, height]` for rendering (default `[1
    ```
 
 2. **Prepare data**  
-   Put processed per-subject images under `processed/` (or set `data.root`), with `\<subject\>_<view>.png` naming and `data.num_views` set accordingly.
+   Put processed per-subject images under `processed/` (or set `data.root`) with all canonical view files (`front/back/left/right`) using `\<subject\>_<view>.png` naming.
 
 3. **Prepare models**  
    - NLF: place the TorchScript checkpoint at `models/nlf_checkpoint/nlf_l_multi.torchscript` (or set `nlf.checkpoint_path`).  

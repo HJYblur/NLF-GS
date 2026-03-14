@@ -19,7 +19,7 @@ class IdentityEncoder(nn.Module):
     def forward(self, feature_map):
         # Pool feature map to get global features
         B, C, Hf, Wf = feature_map.shape
-        pooled_feats = torch.mean(feature_map, dim=(2, 3))  # (B, C)
+        pooled_feats = torch.mean(feature_map.float(), dim=(2, 3))  # (B, C)
 
         # Match the linear layer dtype to avoid precision/dtype asserts when using fp16 backbones
         fc_dtype = self.fc.weight.dtype
