@@ -33,9 +33,9 @@ class AvatarDataset(Dataset):
         Layout per smplx_param:
             data/THuman_2.0_smplx_params/<subject>/mesh_smplx.obj
 
-    Behavior is controlled by config value `data.num_views`:
-      - If num_views == 1: only the 'front' view is loaded.
-      - If num_views > 1: load the first `num_views` entries from VIEW_ORDER.
+    The dataset always loads all canonical views in VIEW_ORDER.
+    Training-time fusion behavior is controlled by `data.num_views` in the trainer
+    (1 = no fusion, 4 = fuse multi-view features).
 
     Outputs per sample:
       - images_float: torch.FloatTensor [V, C, H, W], normalized to [0,1]
@@ -50,7 +50,6 @@ class AvatarDataset(Dataset):
         # Config
         cfg = get_config()
         self.debug: bool = bool(cfg.get("sys", {}).get("debug", False))
-        self.num_views: int = int(cfg.get("data", {}).get("num_views", 1))
         image_size = cfg.get("data", {}).get("image_size", (1024, 1024))
         self.target_w: int = int(image_size[0])
         self.target_h: int = int(image_size[1])
@@ -169,8 +168,7 @@ class AvatarDataset(Dataset):
             if child.is_dir():
                 candidates.append(child)
 
-        max_views = max(1, min(self.num_views, len(VIEW_ORDER)))
-        needed = VIEW_ORDER[:max_views]
+        needed = VIEW_ORDER
 
         for subj_dir in candidates:
             paths: List[Path] = []
@@ -186,7 +184,7 @@ class AvatarDataset(Dataset):
                     {
                         "subject": subj_dir.name,
                         "view_paths": paths,
-                        "view_names": needed,
+                        "view_names": list(needed),
                     }
                 )
 
