@@ -3,7 +3,6 @@ from contextlib import nullcontext
 import json
 import logging
 from pathlib import Path
-import os
 import math
 import torch
 from torch.utils.data import DataLoader
@@ -15,7 +14,6 @@ from encoder.avatar_template import AvatarTemplate
 from decoder.gaussian_decoder import GaussianDecoder
 from render.gaussian_renderer import GsplatRenderer
 from training.losses import LossFunctions
-from avatar_utils.ply_loader import reconstruct_gaussian_avatar_as_ply
 from avatar_utils.config import get_config
 
 
@@ -30,7 +28,6 @@ class NlfGaussianModel(L.LightningModule):
     ):
         super().__init__()
         self._logger = logging.getLogger("train")
-        self.debug = bool(get_config().get("sys", {}).get("debug", False))
         self._profile_gpu = bool(get_config().get("train", {}).get("profile_gpu", False))
         self.use_identity_encoder = bool(
             get_config().get("identity_encoder", {}).get("use_flag", True)
@@ -85,7 +82,6 @@ class NlfGaussianModel(L.LightningModule):
         self._dump_dir = Path(str(analysis_cfg.get("dump_dir", "output/analysis")))
             
         self._shape_debug_logged = False
-        self._logger.info(f"Debug mode: {self.debug}")
 
     def training_step(self, batch: Dict[str, Any], batch_idx: int):
         loss_dict = self.shared_step(batch=batch, batch_idx=batch_idx, stage="train")
@@ -109,25 +105,22 @@ class NlfGaussianModel(L.LightningModule):
 
         grad_ctx = torch.inference_mode() if self.train_decoder_only else nullcontext()
         with grad_ctx:
-            if self.debug:
-                feats = self.load_debug_feats(img_float, img_uint8)[0]
+            # Process backbone one view at a time to avoid holding B full-res
+            # feature maps on GPU simultaneously (saves ~(B-1)/B of backbone VRAM).
+            feat_list = []
+            for v_idx in range(B):
+                f_v = self.backbone.extract_feature_map(
+                    image=img_float[v_idx : v_idx + 1], use_half=True
+                )
+                feat_list.append(f_v)
+            if isinstance(feat_list[0], dict):
+                feats = {
+                    level: torch.cat([fv[level] for fv in feat_list], dim=0)
+                    for level in feat_list[0].keys()
+                }
             else:
-                # Process backbone one view at a time to avoid holding B full-res
-                # feature maps on GPU simultaneously (saves ~(B-1)/B of backbone VRAM).
-                feat_list = []
-                for v_idx in range(B):
-                    f_v = self.backbone.extract_feature_map(
-                        image=img_float[v_idx : v_idx + 1], use_half=True
-                    )
-                    feat_list.append(f_v)
-                if isinstance(feat_list[0], dict):
-                    feats = {
-                        level: torch.cat([fv[level] for fv in feat_list], dim=0)
-                        for level in feat_list[0].keys()
-                    }
-                else:
-                    feats = torch.cat(feat_list, dim=0)  # (B, C, Hf, Wf)
-                del feat_list
+                feats = torch.cat(feat_list, dim=0)  # (B, C, Hf, Wf)
+            del feat_list
             gt_images = img_float
             del img_float
 
@@ -172,8 +165,6 @@ class NlfGaussianModel(L.LightningModule):
             z_id_decode = z_id
 
 
-        # self.debug3d(gaussian_3d[0], subject)
-
         feat_size = feat_for_id.shape[-2:]  # (Hf, Wf)
         self._maybe_dump_local_feats(
             subject,
@@ -216,18 +207,6 @@ class NlfGaussianModel(L.LightningModule):
             gaussian_params_fused = self.decoder(local_feats, z_id_decode)
             gaussian_3d_fused = gaussian_3d_decode[0]
 
-            if stage == "train" and batch_idx % 10 == 0:
-                self._log_gaussian_param_stats(gaussian_params_fused)
-                self._register_gaussian_param_grad_hooks(gaussian_params_fused, batch_idx)
-
-            if self.debug and stage == "train":
-                reconstruct_gaussian_avatar_as_ply(
-                    xyz=gaussian_3d_fused,
-                    gaussian_params=gaussian_params_fused,
-                    template=self.template.load_avatar_template(mode="test"),
-                    output_path=f"output/{subject}/{subject}_debug.ply",
-                )
-
             for view_idx, view_name in enumerate(view_names):
                 rendered_imgs = self.renderer.render(
                     gaussian_3d=gaussian_3d_fused,
@@ -235,10 +214,6 @@ class NlfGaussianModel(L.LightningModule):
                     view_name=view_name,
                     save_folder_path=save_path,
                 )
-
-                if stage == "train" and torch.is_grad_enabled() and not rendered_imgs.requires_grad:
-                    per_view_losses.append(self._proxy_regularization_loss(gaussian_params_fused))
-                    continue
 
                 pred = rendered_imgs.permute(0, 3, 1, 2)
                 gt = gt_images[view_idx : view_idx + 1]
@@ -262,28 +237,12 @@ class NlfGaussianModel(L.LightningModule):
                 gaussian_params_view = self.decoder(local_feats_view, z_id_view)
                 gaussian_3d_view = gaussian_3d_decode[view_idx]
 
-                if stage == "train" and batch_idx % 10 == 0 and view_idx == 0:
-                    self._log_gaussian_param_stats(gaussian_params_view)
-                    self._register_gaussian_param_grad_hooks(gaussian_params_view, batch_idx)
-
-                if self.debug and stage == "train" and view_idx == 0:
-                    reconstruct_gaussian_avatar_as_ply(
-                        xyz=gaussian_3d_view,
-                        gaussian_params=gaussian_params_view,
-                        template=self.template.load_avatar_template(mode="test"),
-                        output_path=f"output/{subject}/{subject}_debug.ply",
-                    )
-
                 rendered_imgs = self.renderer.render(
                     gaussian_3d=gaussian_3d_view,
                     gaussian_params=gaussian_params_view,
                     view_name=view_name,
                     save_folder_path=save_path,
                 )
-
-                if stage == "train" and torch.is_grad_enabled() and not rendered_imgs.requires_grad:
-                    per_view_losses.append(self._proxy_regularization_loss(gaussian_params_view))
-                    continue
 
                 pred = rendered_imgs.permute(0, 3, 1, 2)
                 gt = gt_images[view_idx : view_idx + 1]
@@ -460,15 +419,6 @@ class NlfGaussianModel(L.LightningModule):
             B, _, H, W = img_float.shape
             masks_float = None
 
-        # # Only move uint8 images to GPU when needed (debug mode); saves ~48 MB
-        # debug = bool(get_config().get("sys", {}).get("debug", False))
-        # if debug:
-        #     img_uint8 = img_uint8.to(self.device)
-        # # else: keep on CPU
-
-        # # Move float images to GPU
-        # img_float = img_float.to(self.device)
-
         B, _, H, W = img_float.shape
 
         # Normalize subject (may be a str or a singleton list/tuple)
@@ -511,20 +461,6 @@ class NlfGaussianModel(L.LightningModule):
         if isinstance(augmentation_info, (list, tuple)) and len(augmentation_info) == 1 and isinstance(augmentation_info[0], dict):
             augmentation_info = augmentation_info[0]
 
-        # Pre-check: Set the avatar to be all red
-        # mask = (img_float == 0).all(dim=1, keepdim=True)   # (B, 1, H, W)
-
-        # # set masked pixels to red
-        # img_float = torch.where(
-        #     mask,
-        #     torch.tensor([1.0, 0.0, 0.0], device=img_float.device, dtype=img_float.dtype)
-        #         .view(1, 3, 1, 1),
-        #     img_float
-        # )
-
-        # from torchvision.utils import save_image
-        # save_image(img_float.clamp(0.0, 1.0), f"debug_input_{subject}.png")
-        
         return img_float, img_uint8, masks_float, (B, H, W), subject, view_names, vertices3d, vertices2d, augmentation_info
 
     def _is_test_render_batch(self, subject: str) -> bool:
@@ -591,125 +527,7 @@ class NlfGaussianModel(L.LightningModule):
         self._saved_augmented_subjects.add(subject_str)
         self._logger.info(f"Saved augmented input previews to {out_dir}")
 
-    def load_debug_feats(self, img_float, img_uint8):
-        feats_path = "debug_backbone_features.pt"
-        preds_path = "debug_backbone_preds.pt"
-        if os.path.exists(feats_path) and os.path.exists(preds_path):
-            # Try to load precomputed features and preds for faster debugging
-            preds = torch.load(preds_path, map_location=self.device, weights_only=True)
-            feats = torch.load(feats_path, map_location=self.device, weights_only=True)
-            self._logger.info(
-                f"Loaded backbone features from {feats_path} and preds from {preds_path}"
-            )
-        else:
-            feats, preds = self.backbone.detect_with_features(
-                image_feature=img_float, frame_batch=img_uint8, use_half=True
-            )
-            torch.save(feats, feats_path)
-            torch.save(preds, preds_path)
-            self._logger.info(
-                f"Saved backbone features to {feats_path} and preds to {preds_path}"
-            )
 
-        try:
-            # Save the first sample image to disk for visual inspection.
-            from torchvision.utils import save_image
-
-            sample_img = img_float[0].detach().cpu()
-            # Clamp in case image values are slightly out of [0,1]
-            save_image(sample_img.clamp(0.0, 1.0), "debug_sample.png")
-            self._logger.info("Saved input sample to debug_sample.png")
-        except Exception as exc:  # pragma: no cover - debugging helper
-            self._logger.warning(f"Unable to save sample image: {exc}")
-
-        return feats, preds
-
-    def _proxy_regularization_loss(
-        self, gaussian_params: Dict[str, torch.Tensor]
-    ) -> torch.Tensor:
-        """A simple differentiable loss on decoded gaussian parameters.
-
-        This is used when a differentiable renderer is not available (e.g., CPU).
-        It regularizes scales and opacities to small values while keeping rotation
-        quaternions bounded. Adjust weights as needed.
-        """
-        loss = torch.tensor(0.0, device=self.device)
-        if "scales" in gaussian_params:
-            loss = loss + gaussian_params["scales"].pow(2).mean()
-        if "alpha" in gaussian_params:
-            loss = loss + 0.1 * gaussian_params["alpha"].pow(2).mean()
-        if "rotation" in gaussian_params:
-            # Encourage unit quaternions (norm ~ 1)
-            q = gaussian_params["rotation"]
-            loss = loss + 0.1 * (q.norm(dim=-1) - 1.0).pow(2).mean()
-        return {"loss": loss}
-    
-    def _log_gaussian_param_stats(self, gaussian_params: Dict[str, torch.Tensor]):
-        """Log stats aligned with decoder output dict: scales, rotation, alpha, sh."""
-        stats = {}
-        for key in ("scales", "rotation", "alpha", "sh"):
-            tensor = gaussian_params.get(key, None)
-            if tensor is None or tensor.numel() == 0:
-                continue
-
-            stats[f"gaussian/{key}_mean"] = tensor.mean().item()
-            stats[f"gaussian/{key}_min"] = tensor.min().item()
-            stats[f"gaussian/{key}_max"] = tensor.max().item()
-
-        if stats:
-            self.log_dict(stats, on_step=True, on_epoch=False)
-    
-    def _register_gaussian_param_grad_hooks(self, gaussian_params: Dict[str, torch.Tensor], batch_idx: int):
-        """Register backward hooks and log per-output-dict gradient stats (scales/rotation/alpha/sh)."""
-
-        def make_hook(param_name: str):
-            def hook(grad: torch.Tensor):
-                if grad is None or grad.numel() == 0:
-                    return grad
-
-                grad_stats = {
-                    f"gaussian_grads/{param_name}_mean": grad.mean().item(),
-                    f"gaussian_grads/{param_name}_min": grad.min().item(),
-                    f"gaussian_grads/{param_name}_max": grad.max().item(),
-                }
-
-                self.log_dict(grad_stats, on_step=True, on_epoch=False)
-                return grad
-
-            return hook
-
-        for name in ("scales", "rotation", "alpha", "sh"):
-            tensor = gaussian_params.get(name, None)
-            if tensor is not None and tensor.requires_grad and tensor.numel() > 0:
-                tensor.register_hook(make_hook(name))
 
 
     
-    def debug3d(self, vertices3d: torch.Tensor, subject:str):
-        # Show sample vertices3d images
-        from matplotlib import pyplot as plt
-        import numpy as np
-        pts = np.asarray(vertices3d.cpu())
-        assert pts.ndim == 2 and pts.shape[1] == 3, f"Expected (Nv, 3), got {pts.shape}"
-
-        fig = plt.figure()
-        ax = fig.add_subplot(111, projection="3d")
-        ax.scatter(pts[:, 0], pts[:, 1], pts[:, 2], c="blue", s=10)  # blue dots
-        ax.set_xlabel("X")
-        ax.set_ylabel("Y")
-        ax.set_zlabel("Z")
-        plt.savefig(f"output/{subject}_vertices3d.png", dpi=200, bbox_inches="tight")
-        plt.close()
-    
-    def debug2d(self, vertices2d:torch.Tensor, subject:str):
-        # Show sample vertices2d images
-        from matplotlib import pyplot as plt
-        import numpy as np
-        pts = np.asarray(vertices2d[0].cpu())
-        assert pts.ndim == 2 and pts.shape[1] == 2, f"Expected (Nv, 2), got {pts.shape}"
-
-        plt.figure()
-        plt.scatter(pts[:, 0], pts[:, 1], c="red", s=10)  # red dots
-        plt.axis("equal")  # keep x/y scale the same
-        plt.savefig(f"output/{subject}_vertices2d.png", dpi=200, bbox_inches="tight")
-        plt.close()

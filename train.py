@@ -23,7 +23,7 @@ from src.avatar_utils.config import load_config
 def main():
     # Arg parsing
     parser = argparse.ArgumentParser(description="NLF-GS Training Scaffold")
-    parser.add_argument("--config", type=str, default="configs/nlfgs_base.yaml")
+    parser.add_argument("--config", type=str, default="configs/nlfgs_gpu.yaml")
     args = parser.parse_args()
     os.environ["NLFGS_CONFIG"] = args.config
     cfg = load_config(args.config)
