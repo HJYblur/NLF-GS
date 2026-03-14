@@ -43,7 +43,6 @@ Adjust `environment.yml` channels/packages for your platform if needed.
 avatar-benchmark/
 ├── train.py                 # Training entrypoint
 ├── configs/
-│   ├── nlfgs_base.yaml      # CPU / base config
 │   └── nlfgs_gpu.yaml       # GPU training + rendering
 ├── src/
 │   ├── data/
@@ -147,7 +146,6 @@ Ensure the canonical mesh exists at `avatar.template.cano_mesh_path` when using 
 
 Main config files:
 
-- **`configs/nlfgs_base.yaml`** — CPU, 1 epoch, debug-friendly.
 - **`configs/nlfgs_gpu.yaml`** — CUDA, 10 epochs, render output, loss weights.
 
 Important sections:
@@ -155,7 +153,6 @@ Important sections:
 - **`sys.device`** — `cpu` or `cuda` (or `cuda:0` etc.).
 - **`data.root`** — Directory of processed subject folders (default `processed`).
 - **`data.num_views`** — training mode switch: `1` = per-view decode (no fusion), `4` = fused multi-view decode. Input supervision still uses all canonical views.
-- **`data.augmentation`** — photometric training augmentation settings. Augmentations are synchronized across all views in a sample (same jitter/noise/compression applied to front/back/left/right). You can also save augmented inputs + sampled augmentation parameters with `data.augmentation.save_preview` (written to `<render.save_path>/augmented_inputs/<subject>/`).
 - **`nlf.checkpoint_path`** — Path to the NLF TorchScript file.
 - **`train`** — `accelerator`, `epochs`, `batch_size`, `lr`, `val_ratio`, `weight_rgb`, `weight_ssim`, etc.
 - **`render.save_path`** — Where to save rendered images (e.g. `output`).
@@ -184,12 +181,6 @@ Optional: **`data.image_size`** — `[width, height]` for rendering (default `[1
 4. **Run**
 
    ```bash
-   python train.py --config configs/nlfgs_base.yaml
-   ```
-
-   For GPU training and rendering:
-
-   ```bash
    python train.py --config configs/nlfgs_gpu.yaml
    ```
 
@@ -199,18 +190,13 @@ Logs are written to `logs/train.log`. With CUDA and a valid `render.save_path`, 
 
 ## Debug mode
 
-In config, set **`sys.debug: True`** to:
-
-- Limit the dataset to a few samples.
-- Optionally cache backbone features/predictions in `debug_backbone_features.pt` and `debug_backbone_preds.pt` for faster iteration.
-- Save a debug input image as `debug_sample.png`.
-- Export a reconstructed Gaussian PLY under `output/<subject>/` for inspection.
+The dataset loader still supports `sys.debug: True` to limit iteration to a small subset for quick checks.
 
 ---
 
 ## 3DGS export / visualization
 
-The pipeline can export predicted Gaussians to PLY (e.g. in debug mode or via `reconstruct_gaussian_avatar_as_ply` in `avatar_utils.ply_loader`). You can load and visualize these in tools such as [SuperSplat](https://superspl.at/editor) or other 3DGS viewers.
+Predicted Gaussians can be exported to PLY via `reconstruct_gaussian_avatar_as_ply` in `avatar_utils.ply_loader`. You can load and visualize these in tools such as [SuperSplat](https://superspl.at/editor) or other 3DGS viewers.
 
 ---
 

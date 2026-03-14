@@ -8,7 +8,6 @@ from avatar_utils.config import get_config
 from avatar_utils.smplx_loader import load_smplx_coord3d
 from avatar_utils.smplx_loader import vertices_3d_to_2d
 from avatar_utils.camera import load_camera_mapping
-from src.data.augmentations import SynchronizedPhotometricAugmentation
 
 
 VIEW_ORDER = ["front", "back", "left", "right"]
@@ -46,7 +45,7 @@ class AvatarDataset(Dataset):
       - vertices3d: Optional[torch.FloatTensor] [N, 3]
     """
 
-    def __init__(self, root: str, transform: Optional[Any] = None, apply_augmentation: bool = False):
+    def __init__(self, root: str, transform: Optional[Any] = None):
         # Config
         cfg = get_config()
         self.debug: bool = bool(cfg.get("sys", {}).get("debug", False))
@@ -55,8 +54,6 @@ class AvatarDataset(Dataset):
         self.target_h: int = int(image_size[1])
         self.root = Path(root)
         self.smplx_root = Path(cfg.get("data", {}).get("smplx_root", "data/THuman_2.0_smplx_params"))
-        self.apply_augmentation = bool(apply_augmentation)
-        self.augmentation = SynchronizedPhotometricAugmentation.from_config(cfg)
 
         # Index subjects and required views
         self._records: List[Dict[str, Any]] = []
@@ -103,13 +100,6 @@ class AvatarDataset(Dataset):
         images_float = torch.stack(imgs_f, dim=0)  # [V,C,H,W]
         masks_float = torch.stack(masks_f, dim=0)  # [V,1,H,W]
 
-        augmentation_info: Dict[str, Any] = {"enabled": False}
-        if self.apply_augmentation:
-            # Create a deterministic seed based on subject ID for consistent augmentation per subject
-            # This ensures different subjects get different augmentations, but views remain consistent
-            subject_seed = hash(rec["subject"]) % (2**31)  # Convert subject ID to seed
-            images_float, augmentation_info = self.augmentation.apply_with_info(images_float, seed=subject_seed)
-
         images_uint8 = (images_float.clamp(0.0, 1.0) * 255.0).round().to(torch.uint8)  # [V,C,H,W]
 
         # Load SMPLX 3D vertices from parameter file (standard vertex ordering)
@@ -144,7 +134,6 @@ class AvatarDataset(Dataset):
             "view_names": view_names,
             "vertices3d": vertices3d,
             "vertices2d": vertices2d,
-            "augmentation_info": augmentation_info,
         }
 
     def _index_subjects(self) -> None:
@@ -226,6 +215,4 @@ class ViewsChunkedDataset(Dataset):
             out["vertices3d"] = sample["vertices3d"]
         if "vertices2d" in sample:
             out["vertices2d"] = sample["vertices2d"][start:end]
-        if "augmentation_info" in sample:
-            out["augmentation_info"] = sample["augmentation_info"]
         return out

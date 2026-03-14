@@ -12,8 +12,7 @@ from src.data.datasets import AvatarDataset, ViewsChunkedDataset
 def worker_init_fn(worker_id):
     """Initialize each DataLoader worker with a unique random seed.
     
-    This ensures different workers generate different augmentations
-    and prevents reproducibility issues in multi-worker scenarios.
+    This prevents reproducibility issues in multi-worker scenarios.
     """
     worker_seed = torch.initial_seed() % 2**32
     np.random.seed(worker_seed)
@@ -35,12 +34,10 @@ class AvatarDataModule(L.LightningDataModule):
         train_base_ds = AvatarDataset(
             root=data_cfg.get("root", "processed"),
             transform=None,
-            apply_augmentation=True,
         )
         val_base_ds = AvatarDataset(
             root=data_cfg.get("root", "processed"),
             transform=None,
-            apply_augmentation=False,
         )
         # Chunk views sequentially based on desired views-per-batch (use train batch_size)
         chunk_size = int(train_cfg.get("batch_size", 4))
