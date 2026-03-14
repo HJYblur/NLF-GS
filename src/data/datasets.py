@@ -35,7 +35,7 @@ class AvatarDataset(Dataset):
 
     Behavior is controlled by config value `data.num_views`:
       - If num_views == 1: only the 'front' view is loaded.
-      - If num_views == 4: load the four views in VIEW_ORDER.
+      - If num_views > 1: load the first `num_views` entries from VIEW_ORDER.
 
     Outputs per sample:
       - images_float: torch.FloatTensor [V, C, H, W], normalized to [0,1]
@@ -169,7 +169,8 @@ class AvatarDataset(Dataset):
             if child.is_dir():
                 candidates.append(child)
 
-        needed = ["front"] if self.num_views == 1 else VIEW_ORDER
+        max_views = max(1, min(self.num_views, len(VIEW_ORDER)))
+        needed = VIEW_ORDER[:max_views]
 
         for subj_dir in candidates:
             paths: List[Path] = []

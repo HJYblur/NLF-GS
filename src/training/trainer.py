@@ -100,6 +100,18 @@ class NlfGaussianModel(L.LightningModule):
     def shared_step(self, batch: Dict[str, Any], batch_idx: int, stage: str) -> torch.Tensor:
         # Extract data from batch
         img_float, img_uint8, masks_float, (B, H, W), subject, view_names, vertices3d, vertices2d, augmentation_info = self.process_input(batch)
+        selected_views = min(int(self.num_views), B, len(view_names)) if view_names is not None else B
+        if selected_views < B:
+            img_float = img_float[:selected_views]
+            img_uint8 = img_uint8[:selected_views]
+            if masks_float is not None:
+                masks_float = masks_float[:selected_views]
+            if vertices2d is not None and vertices2d.ndim >= 3:
+                vertices2d = vertices2d[:selected_views]
+            if isinstance(view_names, list):
+                view_names = view_names[:selected_views]
+            B = selected_views
+            self._logger.debug(f"Trimmed batch views to num_views={self.num_views}; using {B} views")
         if stage == "train":
             self._logger.info(f"Processing subject: {subject}, views: {view_names}")
             if self._is_test_render_batch(subject):
