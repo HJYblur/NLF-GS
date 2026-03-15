@@ -96,6 +96,34 @@ class AvatarGaussianEstimator(nn.Module):
         normals = normals / (torch.norm(normals, dim=-1, keepdim=True) + 1e-8)
         return normals
 
+    def compute_gaussian_local_frames(self, vertices3d, device):
+        """Build per-Gaussian orthonormal local frames from parent face geometry.
+
+        Returns:
+            Tensor[B, N, 3, 3] where columns are (tangent_u, tangent_v, normal).
+        """
+        verts3d = vertices3d.to(device=device, dtype=torch.float32)
+        if verts3d.ndim == 2:
+            verts3d = verts3d.unsqueeze(0)
+        B = verts3d.shape[0]
+        N = int(self._avatar.total_gaussians_num)
+        parents = self._avatar.parents.to(device=device, dtype=torch.long)
+
+        flat_idx = parents.reshape(-1)
+        verts_sel = verts3d.index_select(dim=1, index=flat_idx)
+        face_verts = verts_sel.reshape(B, N, 3, 3)
+
+        e1 = face_verts[:, :, 1] - face_verts[:, :, 0]
+        e2 = face_verts[:, :, 2] - face_verts[:, :, 0]
+
+        tangent_u = e1 / (torch.norm(e1, dim=-1, keepdim=True) + 1e-8)
+        normal = torch.linalg.cross(e1, e2, dim=-1)
+        normal = normal / (torch.norm(normal, dim=-1, keepdim=True) + 1e-8)
+        tangent_v = torch.linalg.cross(normal, tangent_u, dim=-1)
+        tangent_v = tangent_v / (torch.norm(tangent_v, dim=-1, keepdim=True) + 1e-8)
+
+        return torch.stack((tangent_u, tangent_v, normal), dim=-1)
+
     def build_depth_map(self, vertices3d, vertices2d, img_shape: tuple, device):
         H_img, W_img = int(img_shape[0]), int(img_shape[1])
         v2d = vertices2d.to(device=device, dtype=torch.float32)

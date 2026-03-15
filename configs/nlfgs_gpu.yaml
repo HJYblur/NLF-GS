@@ -57,7 +57,7 @@ decoder:
   in_dim: 768 # local feature dim
   hidden: 256
   sh_degree: 0
-  out_dim: 11
+  out_dim: 14
   scale_min: 1.0e-6 # sigmoid lower bound for Gaussian scale
   scale_max: 1.0e-3 # sigmoid upper bound for Gaussian scale
   alpha_min: 0.0 # lower bound for opacity
@@ -66,6 +66,7 @@ decoder:
   rot_max: 1.0 # pre-normalization upper bound for quaternion components
   sh_min: -1.0 # lower bound for SH coefficients
   sh_max: 1.0 # upper bound for SH coefficients
+  offset_scale: 0.01 # hard cap factor for local-surface offsets
 
 train:
   # Base settings
@@ -91,6 +92,7 @@ train:
   weight_masked_ssim: 0.1
   weight_perceptual: 0.05
   weight_scale_reg: 0.005
+  weight_offset_reg: 0.01
   weight_opacity_reg: 0.01
   weight_silhouette: 0.2 # Silhouette loss: penalizes mismatch between rendered and GT mask
   weight_multiview_consistency: 0.05

@@ -36,6 +36,7 @@ class GaussianDecoder(nn.Module):
         self.rot_max = float(dec_cfg.get("rot_max", 1.0))
         self.sh_min = float(dec_cfg.get("sh_min", -1.0))
         self.sh_max = float(dec_cfg.get("sh_max", 1.0))
+        self.offset_scale = float(dec_cfg.get("offset_scale", 0.01))
 
         # first local block
         self.fc1 = nn.Linear(self.in_dim, self.hidden)
@@ -119,7 +120,7 @@ class GaussianDecoder(nn.Module):
             gamma = None
             beta = None
 
-        parts = {"scales": [], "rotation": [], "alpha": [], "sh": []}
+        parts = {"scales": [], "rotation": [], "alpha": [], "offset": [], "sh": []}
         for start in range(0, N, chunk_size):
             end = min(start + chunk_size, N)
             feats_chunk = combined_feats[:, start:end, :]  # (B,nc,in_dim)
@@ -139,6 +140,7 @@ class GaussianDecoder(nn.Module):
             scales_nc = split_out["scales"].squeeze(0)  # (nc,3)
             rot_nc = split_out["rotation"].squeeze(0)  # (nc,4)
             alpha_nc = split_out["alpha"].squeeze(0)  # (nc,1)
+            offset_nc = split_out["offset"].squeeze(0)  # (nc,3)
             sh_nc = split_out.get("sh", None)
             sh_nc = (
                 None if (sh_nc is None or sh_nc.numel() == 0) else sh_nc.squeeze(0)
@@ -147,6 +149,7 @@ class GaussianDecoder(nn.Module):
             parts["scales"].append(scales_nc)
             parts["rotation"].append(rot_nc)
             parts["alpha"].append(alpha_nc)
+            parts["offset"].append(offset_nc)
             parts["sh"].append(sh_nc)
 
             # Free chunk temporaries ASAP
@@ -156,6 +159,7 @@ class GaussianDecoder(nn.Module):
         scales = torch.cat([x for x in parts["scales"]], dim=0)  # (N,3)
         rotation = torch.cat([x for x in parts["rotation"]], dim=0)  # (N,4)
         alpha = torch.cat([x.squeeze(-1) for x in parts["alpha"]], dim=0)  # (N,)
+        offset = torch.cat([x for x in parts["offset"]], dim=0)  # (N,3)
 
         # If any chunk had SH, stack; else set to None
         if any(x is not None for x in parts["sh"]):
@@ -163,14 +167,20 @@ class GaussianDecoder(nn.Module):
         else:
             sh = None
 
-        return {"scales": scales, "rotation": rotation, "alpha": alpha, "sh": sh}
+        return {
+            "scales": scales,
+            "rotation": rotation,
+            "alpha": alpha,
+            "offset": offset,
+            "sh": sh,
+        }
 
     def split_and_parameterize(self, out):
         """
         Split raw MLP outputs into parameter fields and apply stable parameterizations.
         """
         D = out.shape[-1]
-        min_header = 3 + 4 + 1
+        min_header = 3 + 4 + 1 + 3
         if D < min_header:
             raise ValueError(f"Output dim must be >= {min_header}, got {D}")
 
@@ -182,6 +192,8 @@ class GaussianDecoder(nn.Module):
         i += 4
         alpha_raw = out[..., i : i + 1]
         i += 1
+        offset_raw = out[..., i : i + 3]
+        i += 3
         sh_raw = (
             out[..., i : i + sh_dim]
             if sh_dim > 0
@@ -202,24 +214,27 @@ class GaussianDecoder(nn.Module):
         rot = rot_mapped / (rot_norm + 1e-8)
 
         alpha = self.alpha_min + (self.alpha_max - self.alpha_min) * alpha_01
+        offset = self.offset_scale * torch.tanh(offset_raw)
 
         sh = self.sh_min + (self.sh_max - self.sh_min) * sh_01
 
-        self.investigate(scales, rot, alpha, sh)
+        self.investigate(scales, rot, alpha, offset, sh)
         
         return {
             "scales": scales,
             "rotation": rot,
             "alpha": alpha,
+            "offset": offset,
             "sh": sh,
         }
 
-    def investigate(self, scales, rotation, alpha, sh):
+    def investigate(self, scales, rotation, alpha, offset, sh):
         if not self.debug:
             return
         print(f"Scale min/max: {scales.min().item()},{scales.max().item()}, mean/std: {scales.mean().item()},{scales.std().item()} ")
         print(f"Rotation min/max: {rotation.min().item()},{rotation.max().item()}, mean/std: {rotation.mean().item()},{rotation.std().item()} ")
         print(f"Alpha min/max: {alpha.min().item()},{alpha.max().item()}, mean/std: {alpha.mean().item()},{alpha.std().item()} ")
+        print(f"Offset min/max: {offset.min().item()},{offset.max().item()}, mean/std: {offset.mean().item()},{offset.std().item()} ")
         if sh is not None:
             print(f"SH min/max: {sh.min().item()},{sh.max().item()}, mean/std: {sh.mean().item()},{sh.std().item()} ")
             

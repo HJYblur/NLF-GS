@@ -18,6 +18,7 @@ class LossFunctions(nn.Module):
         self.weight_scale_reg = float(train_cfg.get("weight_scale_reg", 0.0))
         self.weight_opacity_reg = float(train_cfg.get("weight_opacity_reg", 0.0))
         self.weight_silhouette = float(train_cfg.get("weight_silhouette", 0.0))
+        self.weight_offset_reg = float(train_cfg.get("weight_offset_reg", 0.0))
         self.weight_multiview_consistency = float(
             train_cfg.get("weight_multiview_consistency", 0.0)
         )
@@ -124,12 +125,14 @@ class LossFunctions(nn.Module):
     def regularization_loss(self, gaussian_params, device):
         if gaussian_params is None:
             zero = torch.zeros((), device=device)
-            return zero, zero
+            return zero, zero, zero
         scales = gaussian_params.get("scales", None)
         alpha = gaussian_params.get("alpha", None)
+        offset = gaussian_params.get("offset", None)
         scale_reg = scales.mean() if scales is not None else torch.zeros((), device=device)
         opacity_reg = alpha.mean() if alpha is not None else torch.zeros((), device=device)
-        return scale_reg, opacity_reg
+        offset_reg = offset.pow(2).mean() if offset is not None else torch.zeros((), device=device)
+        return scale_reg, opacity_reg, offset_reg
 
     def multiview_consistency_loss(self, gaussian_3d, device):
         """Penalize disagreement of per-view Gaussian 3D positions.
@@ -156,7 +159,7 @@ class LossFunctions(nn.Module):
             pred_sil = self._foreground_mask(pred_imgs)  # Extract from PREDICTED images
             sil_loss = self.silhouette_loss(pred_sil, gt_masks)
 
-        scale_reg, opacity_reg = self.regularization_loss(
+        scale_reg, opacity_reg, offset_reg = self.regularization_loss(
             gaussian_params, device=pred_imgs.device
         )
         multiview_consistency = self.multiview_consistency_loss(
@@ -171,6 +174,7 @@ class LossFunctions(nn.Module):
             + self.weight_perceptual * perceptual_loss
             + self.weight_silhouette * sil_loss
             + self.weight_scale_reg * scale_reg
+            + self.weight_offset_reg * offset_reg
             # self.weight_opacity_reg * opacity_reg
             # self.weight_multiview_consistency * multiview_consistency
         )
@@ -183,6 +187,7 @@ class LossFunctions(nn.Module):
             "masked_ssim": ssim_loss,
             "perceptual": perceptual_loss,
             "scale_reg": scale_reg,
+            "offset_reg": offset_reg,
             # "opacity_reg": opacity_reg,
             # "multiview_consistency": multiview_consistency,
         }
