@@ -143,6 +143,11 @@ class NlfGaussianModel(L.LightningModule):
                     feats, vertices3d, vertices2d, img_shape=(H, W)
                 )
             )  # (B, N, C_local), (B, N), (B, N, 3), (B, N, 2)
+            local_frames = self.avatar_estimator.compute_gaussian_local_frames(
+                vertices3d, device=gaussian_3d.device, batch_size=B
+            )  # (B, N, 3, 3)
+            if local_frames.shape[0] == 1 and B > 1:
+                local_frames = local_frames.expand(B, -1, -1, -1)
         local_feats_prefusion = local_feats
         # Use all views for supervision; `data.num_views` only controls
         # whether decoder input is per-view (1) or fused (4).
@@ -152,9 +157,11 @@ class NlfGaussianModel(L.LightningModule):
             weights = weights / weights_sum
             local_feats = (local_feats * weights.unsqueeze(-1)).sum(dim=0, keepdim=True)
             gaussian_3d_decode = gaussian_3d[0:1]
+            local_frames_decode = local_frames[0:1]
             z_id_decode = None if z_id is None else z_id.mean(dim=0, keepdim=True)
         else:
             gaussian_3d_decode = gaussian_3d
+            local_frames_decode = local_frames
             z_id_decode = z_id
 
 
@@ -199,6 +206,11 @@ class NlfGaussianModel(L.LightningModule):
         if self.num_views == 4:
             gaussian_params_fused = self.decoder(local_feats, z_id_decode)
             gaussian_3d_fused = gaussian_3d_decode[0]
+            offset_local = gaussian_params_fused.get("offset", None)
+            if offset_local is not None:
+                gaussian_3d_fused = gaussian_3d_fused + torch.einsum(
+                    "nij,nj->ni", local_frames_decode[0], offset_local
+                )
 
             for view_idx, view_name in enumerate(view_names):
                 rendered_imgs = self.renderer.render(
@@ -229,6 +241,12 @@ class NlfGaussianModel(L.LightningModule):
 
                 gaussian_params_view = self.decoder(local_feats_view, z_id_view)
                 gaussian_3d_view = gaussian_3d_decode[view_idx]
+                offset_local = gaussian_params_view.get("offset", None)
+                if offset_local is not None:
+                    frame_idx = view_idx if local_frames_decode.shape[0] > 1 else 0
+                    gaussian_3d_view = gaussian_3d_view + torch.einsum(
+                        "nij,nj->ni", local_frames_decode[frame_idx], offset_local
+                    )
 
                 rendered_imgs = self.renderer.render(
                     gaussian_3d=gaussian_3d_view,
@@ -250,6 +268,7 @@ class NlfGaussianModel(L.LightningModule):
                     )
                 )
         del local_feats
+        del local_frames
         del z_id
 
         loss_dict = {
