@@ -3,6 +3,7 @@ from contextlib import nullcontext
 import logging
 from pathlib import Path
 import math
+import re
 import torch
 from torch.utils.data import DataLoader
 import lightning as L
@@ -77,17 +78,26 @@ class NlfGaussianModel(L.LightningModule):
         self._dump_dir = Path(str(analysis_cfg.get("dump_dir", "output/analysis")))
             
         self._shape_debug_logged = False
+        render_cfg = get_config().get("render", {})
+        self._log_render_outputs_online = bool(
+            render_cfg.get("log_online", True)
+        )
+        self._render_log_stages = set(render_cfg.get("log_stages", ["train", "val"]))
+        self._render_log_cache = {"train": set(), "val": set()}
+        self._render_log_epoch = {"train": -1, "val": -1}
+        train_cfg = get_config().get("train", {})
+        self._log_train_losses = bool(train_cfg.get("log_train_losses", True))
+        self._log_val_losses = bool(train_cfg.get("log_val_losses", True))
+        self._tracked_loss_names = train_cfg.get("tracked_losses", None)
 
     def training_step(self, batch: Dict[str, Any], batch_idx: int):
         loss_dict = self.shared_step(batch=batch, batch_idx=batch_idx, stage="train")
-        for k, v in loss_dict.items():
-            self.log(f"train/{k}", v)
+        self._log_loss_dict(loss_dict, stage="train")
         return loss_dict["loss"]
 
     def validation_step(self, batch: Dict[str, Any], batch_idx: int):
         val_loss_dict = self.shared_step(batch=batch, batch_idx=batch_idx, stage="val")
-        for k,v in val_loss_dict.items():
-            self.log(f"val/{k}", v, prog_bar=(k=="loss"))
+        self._log_loss_dict(val_loss_dict, stage="val")
         return val_loss_dict["loss"]
 
     def shared_step(self, batch: Dict[str, Any], batch_idx: int, stage: str) -> torch.Tensor:
@@ -198,10 +208,6 @@ class NlfGaussianModel(L.LightningModule):
         assert gaussian_3d.shape[0] == B, "Mismatch between gaussian_3d and number of views"
 
         per_view_losses = []
-        save_path = (
-            Path(get_config().get("render", {}).get("save_path", "output"))
-            / subject
-        ) if self._is_test_render_batch(subject) else None
 
         if self.num_views == 4:
             gaussian_params_fused = self.decoder(local_feats, z_id_decode)
@@ -217,7 +223,12 @@ class NlfGaussianModel(L.LightningModule):
                     gaussian_3d=gaussian_3d_fused,
                     gaussian_params=gaussian_params_fused,
                     view_name=view_name,
-                    save_folder_path=save_path,
+                )
+                self._log_render_output(
+                    rendered_imgs=rendered_imgs,
+                    subject=subject,
+                    view_name=view_name,
+                    stage=stage,
                 )
 
                 pred = rendered_imgs.permute(0, 3, 1, 2)
@@ -252,7 +263,12 @@ class NlfGaussianModel(L.LightningModule):
                     gaussian_3d=gaussian_3d_view,
                     gaussian_params=gaussian_params_view,
                     view_name=view_name,
-                    save_folder_path=save_path,
+                )
+                self._log_render_output(
+                    rendered_imgs=rendered_imgs,
+                    subject=subject,
+                    view_name=view_name,
+                    stage=stage,
                 )
 
                 pred = rendered_imgs.permute(0, 3, 1, 2)
@@ -472,6 +488,60 @@ class NlfGaussianModel(L.LightningModule):
     def _is_test_render_batch(self, subject: str) -> bool:
         test_renders = [0, 7, 50, 100, 200, 350]
         return int(subject) in test_renders
+
+    def _log_loss_dict(self, loss_dict: Dict[str, torch.Tensor], stage: str) -> None:
+        should_log = (stage == "train" and self._log_train_losses) or (
+            stage == "val" and self._log_val_losses
+        )
+        if not should_log:
+            return
+
+        tracked = set(self._tracked_loss_names) if self._tracked_loss_names else None
+        for key, value in loss_dict.items():
+            if tracked is not None and key not in tracked:
+                continue
+            self.log(f"{stage}/{key}", value, prog_bar=(stage == "val" and key == "loss"))
+
+    def _log_render_output(
+        self,
+        rendered_imgs: torch.Tensor,
+        subject: str,
+        view_name: str,
+        stage: str,
+    ) -> None:
+        """Log rendered images online instead of writing to the local output/ folder."""
+        if not self._log_render_outputs_online:
+            return
+        if stage not in self._render_log_stages:
+            return
+        if not self._is_test_render_batch(subject):
+            return
+        if not hasattr(self.logger, "experiment") or self.logger.experiment is None:
+            return
+
+        # Ensure each (subject, view, stage) render is logged once per epoch.
+        if stage in self._render_log_epoch and self._render_log_epoch[stage] != int(self.current_epoch):
+            self._render_log_epoch[stage] = int(self.current_epoch)
+            self._render_log_cache[stage].clear()
+
+        cache_key = (str(subject), str(view_name))
+        if stage in self._render_log_cache and cache_key in self._render_log_cache[stage]:
+            return
+
+        try:
+            import wandb
+        except Exception:
+            return
+
+        render_np = rendered_imgs[0].detach().clamp(0, 1).cpu().numpy()
+        safe_subject = re.sub(r"[^a-zA-Z0-9_-]+", "_", str(subject))
+        safe_view = re.sub(r"[^a-zA-Z0-9_-]+", "_", str(view_name))
+        key = f"render/{stage}/{safe_subject}_{safe_view}"
+        self.logger.experiment.log(
+            {key: wandb.Image(render_np), "global_step": int(self.global_step)}
+        )
+        if stage in self._render_log_cache:
+            self._render_log_cache[stage].add(cache_key)
 
 
 

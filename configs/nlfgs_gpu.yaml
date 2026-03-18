@@ -99,6 +99,9 @@ train:
 
   # GPU memory profiling (logs peak VRAM per section)
   profile_gpu: False
+  log_train_losses: true
+  log_val_losses: true
+  tracked_losses: null # null logs all losses; set list like ["loss", "l1"] to filter
 
 analysis:
   dump_local_feats: false # set true to save local_feats and collision_data tensors
@@ -107,5 +110,7 @@ analysis:
   dump_dir: tmp/analysis # directory where .pt files are written
 
 render:
-  save_path: output
+  save_path: output # kept for backward compatibility; renders are logged online by default
   view_chunk_size: 1
+  log_online: true
+  log_stages: ["train", "val"]

@@ -3,6 +3,7 @@ import logging
 import sys
 import os
 from pathlib import Path
+from typing import Any, Dict
 
 import torch
 import lightning as L
@@ -18,6 +19,18 @@ from src.decoder.gaussian_decoder import GaussianDecoder
 from src.render.gaussian_renderer import GsplatRenderer
 from src.training.trainer import NlfGaussianModel
 from src.avatar_utils.config import load_config
+
+
+def _flatten_dict(data: Dict[str, Any], prefix: str = "") -> Dict[str, Any]:
+    """Flatten a nested dict to dotted keys for robust logger hyperparam capture."""
+    flat: Dict[str, Any] = {}
+    for key, value in data.items():
+        dotted_key = f"{prefix}.{key}" if prefix else str(key)
+        if isinstance(value, dict):
+            flat.update(_flatten_dict(value, dotted_key))
+        else:
+            flat[dotted_key] = value
+    return flat
 
 
 def main():
@@ -138,7 +151,13 @@ def main():
         save_dir=str(Path(__file__).parent / "logs"),
         log_model=False,
     )
-    wandb_logger.log_hyperparams({"config": cfg, "config_path": args.config})
+    # Log full config both nested and flattened, because some UIs only expose
+    # searchable hyperparameters for flat key/value pairs.
+    flat_cfg = _flatten_dict(cfg)
+    wandb_logger.log_hyperparams({"config": cfg, "config_path": args.config, **flat_cfg})
+    if hasattr(wandb_logger, "experiment") and wandb_logger.experiment is not None:
+        wandb_logger.experiment.config.update({"config_path": args.config}, allow_val_change=True)
+        wandb_logger.experiment.config.update(flat_cfg, allow_val_change=True)
 
     # Trainer precision and accelerator
     precision = cfg.get("train", {}).get("precision")
