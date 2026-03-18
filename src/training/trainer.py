@@ -1,8 +1,8 @@
 from typing import Any, Dict, Optional
 from contextlib import nullcontext
-import logging
 from pathlib import Path
 import math
+import re
 import torch
 from torch.utils.data import DataLoader
 import lightning as L
@@ -26,7 +26,6 @@ class NlfGaussianModel(L.LightningModule):
         train_decoder_only: bool = True,
     ):
         super().__init__()
-        self._logger = logging.getLogger("train")
         self._profile_gpu = bool(get_config().get("train", {}).get("profile_gpu", False))
         self.use_identity_encoder = bool(
             get_config().get("identity_encoder", {}).get("use_flag", True)
@@ -50,10 +49,12 @@ class NlfGaussianModel(L.LightningModule):
         # Read optimizer & scheduler settings from config and save as hyperparameters
         train_cfg = get_config().get("train", {})
         lr = float(train_cfg.get("lr", 1e-4))
-        wd = float(train_cfg.get("weight_decay", 0.0))
+        wd = float(train_cfg.get("wd", train_cfg.get("weight_decay", 0.01)))
         betas = train_cfg.get("betas", [0.9, 0.99])
         eps = float(train_cfg.get("eps", 1e-8))
         warmup_ratio = float(train_cfg.get("warmup_ratio", 0.05))
+        bb_lr_mult = float(train_cfg.get("bb_lr_mult", 0.1))
+        min_lr_ratio = float(train_cfg.get("min_lr_ratio", 0.05))
         scheduler_name = train_cfg.get("scheduler", "cosine")
         # Persist to hparams for use in configure_optimizers
         self.save_hyperparameters({
@@ -62,13 +63,14 @@ class NlfGaussianModel(L.LightningModule):
             "betas": betas,
             "eps": eps,
             "warmup_ratio": warmup_ratio,
+            "bb_lr_mult": bb_lr_mult,
+            "min_lr_ratio": min_lr_ratio,
             "scheduler": scheduler_name,
         })
 
         # If True, freeze all parameters except the decoder's so only decoder gets updated.
         if self.train_decoder_only:
             self.freeze_encoder()
-            self._logger.info("Frozen encoder parameters.")
 
         # Feature-dump settings for PCA analysis
         analysis_cfg = get_config().get("analysis", {})
@@ -77,24 +79,31 @@ class NlfGaussianModel(L.LightningModule):
         self._dump_dir = Path(str(analysis_cfg.get("dump_dir", "output/analysis")))
             
         self._shape_debug_logged = False
+        render_cfg = get_config().get("render", {})
+        self._log_render_outputs_online = bool(
+            render_cfg.get("log_online", True)
+        )
+        self._render_log_stages = set(render_cfg.get("log_stages", ["train", "val"]))
+        train_cfg = get_config().get("train", {})
+        self._log_train_losses = bool(train_cfg.get("log_train_losses", True))
+        self._log_val_losses = bool(train_cfg.get("log_val_losses", True))
+        self._tracked_loss_names = train_cfg.get("tracked_losses", None)
+        raw_test_renders = train_cfg.get("test_renders", [7, 100, 350])
+        self._test_renders = {int(subject_id) for subject_id in raw_test_renders}
 
     def training_step(self, batch: Dict[str, Any], batch_idx: int):
         loss_dict = self.shared_step(batch=batch, batch_idx=batch_idx, stage="train")
-        for k, v in loss_dict.items():
-            self.log(f"train/{k}", v)
+        self._log_loss_dict(loss_dict, stage="train")
         return loss_dict["loss"]
 
     def validation_step(self, batch: Dict[str, Any], batch_idx: int):
         val_loss_dict = self.shared_step(batch=batch, batch_idx=batch_idx, stage="val")
-        for k,v in val_loss_dict.items():
-            self.log(f"val/{k}", v, prog_bar=(k=="loss"))
+        self._log_loss_dict(val_loss_dict, stage="val")
         return val_loss_dict["loss"]
 
     def shared_step(self, batch: Dict[str, Any], batch_idx: int, stage: str) -> torch.Tensor:
         # Extract data from batch
         img_float, img_uint8, masks_float, (B, H, W), subject, view_names, vertices3d, vertices2d = self.process_input(batch)
-        if stage == "train":
-            self._logger.info(f"Processing subject: {subject}, views: {view_names}")
 
         grad_ctx = torch.inference_mode() if self.train_decoder_only else nullcontext()
         with grad_ctx:
@@ -177,14 +186,6 @@ class NlfGaussianModel(L.LightningModule):
         )
 
         if not self._shape_debug_logged:
-            if isinstance(feats, dict):
-                fmap_shapes = {k: tuple(v.shape) for k, v in feats.items()}
-                self._logger.info(f"FPN feature map shapes: {fmap_shapes}")
-                self._logger.info(
-                    f"Per-level sampled feature shapes: {self.avatar_estimator.last_sampled_level_shapes}"
-                )
-            self._logger.info(f"Concatenated local_feats shape: {tuple(local_feats.shape)}")
-            self._logger.info(f"Decoder expected input dim: {self.decoder.in_dim}")
             assert local_feats.shape[-1] == self.decoder.in_dim, (
                 f"Local feature dim {local_feats.shape[-1]} != decoder.in_dim {self.decoder.in_dim}"
             )
@@ -198,10 +199,6 @@ class NlfGaussianModel(L.LightningModule):
         assert gaussian_3d.shape[0] == B, "Mismatch between gaussian_3d and number of views"
 
         per_view_losses = []
-        save_path = (
-            Path(get_config().get("render", {}).get("save_path", "output"))
-            / subject
-        ) if self._is_test_render_batch(subject) else None
 
         if self.num_views == 4:
             gaussian_params_fused = self.decoder(local_feats, z_id_decode)
@@ -217,7 +214,12 @@ class NlfGaussianModel(L.LightningModule):
                     gaussian_3d=gaussian_3d_fused,
                     gaussian_params=gaussian_params_fused,
                     view_name=view_name,
-                    save_folder_path=save_path,
+                )
+                self._log_render_output(
+                    rendered_imgs=rendered_imgs,
+                    subject=subject,
+                    view_name=view_name,
+                    stage=stage,
                 )
 
                 pred = rendered_imgs.permute(0, 3, 1, 2)
@@ -252,7 +254,12 @@ class NlfGaussianModel(L.LightningModule):
                     gaussian_3d=gaussian_3d_view,
                     gaussian_params=gaussian_params_view,
                     view_name=view_name,
-                    save_folder_path=save_path,
+                )
+                self._log_render_output(
+                    rendered_imgs=rendered_imgs,
+                    subject=subject,
+                    view_name=view_name,
+                    stage=stage,
                 )
 
                 pred = rendered_imgs.permute(0, 3, 1, 2)
@@ -307,7 +314,6 @@ class NlfGaussianModel(L.LightningModule):
 
         out_path = self._dump_dir / f"local_feats_{subject}.pt"
         torch.save(local_feats.detach().cpu(), out_path)
-        self._logger.info(f"Dumped local_feats for subject {subject} → {out_path}")
 
         # Companion file for pre/post fusion quality analysis
         fusion_path = self._dump_dir / f"fusion_data_{subject}.pt"
@@ -320,7 +326,6 @@ class NlfGaussianModel(L.LightningModule):
             },
             fusion_path,
         )
-        self._logger.info(f"Dumped fusion_data for subject {subject} → {fusion_path}")
 
         # Companion file for projection-collision analysis
         H, W = int(img_size[0]), int(img_size[1])
@@ -334,47 +339,111 @@ class NlfGaussianModel(L.LightningModule):
             },
             collision_path,
         )
-        self._logger.info(f"Dumped collision_data for subject {subject} → {collision_path}")
 
     def freeze_encoder(self):
         for p in self.identity_encoder.parameters():
             p.requires_grad = False
 
     def configure_optimizers(self):
-        trainable_params = list(self.decoder.parameters())
-        if not self.train_decoder_only:
-            trainable_params += [
-                p for p in self.backbone.parameters() if p.requires_grad
-            ]
+        base_lr = float(self.hparams.lr)              # decoder lr
+        bb_mult = float(getattr(self.hparams, "bb_lr_mult", 0.1))
+        wd = float(self.hparams.wd)
+
+        def is_no_decay(name, param):
+            if param.ndim == 1:
+                return True
+            if name.endswith(".bias"):
+                return True
+            n = name.lower()
+            if "bn" in n or "norm" in n:
+                return True
+            return False
+
+        dec_decay, dec_no_decay = [], []
+        for n, p in self.decoder.named_parameters():
+            if not p.requires_grad:
+                continue
+            (dec_no_decay if is_no_decay(n, p) else dec_decay).append(p)
+
+        bb_decay, bb_no_decay = [], []
+        for n, p in self.backbone.named_parameters():
+            if not p.requires_grad:
+                continue
+            (bb_no_decay if is_no_decay(n, p) else bb_decay).append(p)
 
         optimizer = torch.optim.AdamW(
-            trainable_params,
-            lr=float(self.hparams.lr),
-            weight_decay=float(self.hparams.wd),
+            [
+                {
+                    "name": "decoder_decay",
+                    "params": dec_decay,
+                    "lr": base_lr,
+                    "weight_decay": wd,
+                },
+                {
+                    "name": "decoder_no_decay",
+                    "params": dec_no_decay,
+                    "lr": base_lr,
+                    "weight_decay": 0.0,
+                },
+                {
+                    "name": "backbone_decay",
+                    "params": bb_decay,
+                    "lr": base_lr * bb_mult,
+                    "weight_decay": wd,
+                },
+                {
+                    "name": "backbone_no_decay",
+                    "params": bb_no_decay,
+                    "lr": base_lr * bb_mult,
+                    "weight_decay": 0.0,
+                },
+            ],
             betas=tuple(self.hparams.betas) if isinstance(self.hparams.betas, (list, tuple)) else (0.9, 0.99),
             eps=float(self.hparams.eps),
         )
 
-        total_steps = self.trainer.estimated_stepping_batches
-        warmup_steps = int(float(self.hparams.warmup_ratio) * max(1, total_steps))
+        total_steps = int(self.trainer.estimated_stepping_batches)
+        warmup_ratio = float(self.hparams.warmup_ratio)
+        warmup_ratio = min(1.0, max(0.0, warmup_ratio))
+        warmup_steps = int(warmup_ratio * max(1, total_steps))
+        min_lr_ratio = float(getattr(self.hparams, "min_lr_ratio", 0.05))
 
         def lr_lambda(step):
-            if step < warmup_steps:
-                return step / max(1, warmup_steps)
-            progress = (step - warmup_steps) / max(1, total_steps - warmup_steps)
-            # cosine decay to zero
-            return 0.5 * (1.0 + math.cos(math.pi * progress))
+            if warmup_steps > 0 and step < warmup_steps:
+                return (step + 1) / warmup_steps
+            denom = max(1, total_steps - warmup_steps)
+            progress = (step - warmup_steps) / denom
+            progress = min(1.0, max(0.0, progress))
+            cosine = 0.5 * (1.0 + math.cos(math.pi * progress))
+            return min_lr_ratio + (1.0 - min_lr_ratio) * cosine
 
         scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=lr_lambda)
 
-        return {
-            "optimizer": optimizer,
-            "lr_scheduler": {"scheduler": scheduler, "interval": "step"},
-        }
-
+        return {"optimizer": optimizer, "lr_scheduler": {"scheduler": scheduler, "interval": "step"}}
+    
     def on_train_batch_end(self, outputs, batch, batch_idx):
-        lr = self.trainer.optimizers[0].param_groups[0]["lr"]
-        self.log("train/lr", lr, prog_bar=True)
+        param_groups = self.trainer.optimizers[0].param_groups
+
+        decoder_lrs = [
+            group["lr"]
+            for group in param_groups
+            if str(group.get("name", "")).startswith("decoder")
+        ]
+        backbone_lrs = [
+            group["lr"]
+            for group in param_groups
+            if str(group.get("name", "")).startswith("backbone")
+        ]
+
+        decoder_lr = float(decoder_lrs[0]) if decoder_lrs else float(param_groups[0]["lr"])
+        backbone_lr = (
+            float(backbone_lrs[0])
+            if backbone_lrs
+            else float(param_groups[min(2, len(param_groups) - 1)]["lr"])
+        )
+
+        self.log("train/lr_decoder", decoder_lr, prog_bar=True)
+        self.log("train/lr_backbone", backbone_lr, prog_bar=False)
 
     def process_input(self, batch):
         """Extract tensors from the dataset batch and normalize shape/device.
@@ -470,8 +539,50 @@ class NlfGaussianModel(L.LightningModule):
         return img_float, img_uint8, masks_float, (B, H, W), subject, view_names, vertices3d, vertices2d
 
     def _is_test_render_batch(self, subject: str) -> bool:
-        test_renders = [0, 7, 50, 100, 200, 350]
-        return int(subject) in test_renders
+        return int(subject) in self._test_renders
+
+    def _log_loss_dict(self, loss_dict: Dict[str, torch.Tensor], stage: str) -> None:
+        should_log = (stage == "train" and self._log_train_losses) or (
+            stage == "val" and self._log_val_losses
+        )
+        if not should_log:
+            return
+
+        tracked = set(self._tracked_loss_names) if self._tracked_loss_names else None
+        for key, value in loss_dict.items():
+            if tracked is not None and key not in tracked:
+                continue
+            self.log(f"{stage}/{key}", value, prog_bar=(stage == "val" and key == "loss"))
+
+    def _log_render_output(
+        self,
+        rendered_imgs: torch.Tensor,
+        subject: str,
+        view_name: str,
+        stage: str,
+    ) -> None:
+        """Log rendered images online instead of writing to the local output/ folder."""
+        if not self._log_render_outputs_online:
+            return
+        if stage not in self._render_log_stages:
+            return
+        if not self._is_test_render_batch(subject):
+            return
+        if not hasattr(self.logger, "experiment") or self.logger.experiment is None:
+            return
+
+        try:
+            import wandb
+        except Exception:
+            return
+
+        render_np = rendered_imgs[0].detach().clamp(0, 1).cpu().numpy()
+        safe_subject = re.sub(r"[^a-zA-Z0-9_-]+", "_", str(subject))
+        safe_view = re.sub(r"[^a-zA-Z0-9_-]+", "_", str(view_name))
+        key = f"render/{stage}/{safe_subject}_{safe_view}"
+        self.logger.experiment.log(
+            {key: wandb.Image(render_np), "global_step": int(self.global_step)}
+        )
 
 
 
