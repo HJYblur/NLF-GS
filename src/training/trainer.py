@@ -84,8 +84,6 @@ class NlfGaussianModel(L.LightningModule):
             render_cfg.get("log_online", True)
         )
         self._render_log_stages = set(render_cfg.get("log_stages", ["train", "val"]))
-        self._render_log_cache = {"train": set(), "val": set()}
-        self._render_log_epoch = {"train": -1, "val": -1}
         train_cfg = get_config().get("train", {})
         self._log_train_losses = bool(train_cfg.get("log_train_losses", True))
         self._log_val_losses = bool(train_cfg.get("log_val_losses", True))
@@ -573,15 +571,6 @@ class NlfGaussianModel(L.LightningModule):
         if not hasattr(self.logger, "experiment") or self.logger.experiment is None:
             return
 
-        # Ensure each (subject, view, stage) render is logged once per epoch.
-        if stage in self._render_log_epoch and self._render_log_epoch[stage] != int(self.current_epoch):
-            self._render_log_epoch[stage] = int(self.current_epoch)
-            self._render_log_cache[stage].clear()
-
-        cache_key = (str(subject), str(view_name))
-        if stage in self._render_log_cache and cache_key in self._render_log_cache[stage]:
-            return
-
         try:
             import wandb
         except Exception:
@@ -594,8 +583,6 @@ class NlfGaussianModel(L.LightningModule):
         self.logger.experiment.log(
             {key: wandb.Image(render_np), "global_step": int(self.global_step)}
         )
-        if stage in self._render_log_cache:
-            self._render_log_cache[stage].add(cache_key)
 
 
 
