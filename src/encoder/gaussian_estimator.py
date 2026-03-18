@@ -96,7 +96,7 @@ class AvatarGaussianEstimator(nn.Module):
         normals = normals / (torch.norm(normals, dim=-1, keepdim=True) + 1e-8)
         return normals
 
-    def compute_gaussian_local_frames(self, vertices3d, device):
+    def compute_gaussian_local_frames(self, vertices3d, device, batch_size: int = None):
         """Build per-Gaussian orthonormal local frames from parent face geometry.
 
         Returns:
@@ -105,6 +105,8 @@ class AvatarGaussianEstimator(nn.Module):
         verts3d = vertices3d.to(device=device, dtype=torch.float32)
         if verts3d.ndim == 2:
             verts3d = verts3d.unsqueeze(0)
+            if batch_size is not None and batch_size > 1:
+                verts3d = verts3d.expand(batch_size, -1, -1)
         B = verts3d.shape[0]
         N = int(self._avatar.total_gaussians_num)
         parents = self._avatar.parents.to(device=device, dtype=torch.long)

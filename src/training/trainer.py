@@ -144,8 +144,10 @@ class NlfGaussianModel(L.LightningModule):
                 )
             )  # (B, N, C_local), (B, N), (B, N, 3), (B, N, 2)
             local_frames = self.avatar_estimator.compute_gaussian_local_frames(
-                vertices3d, device=gaussian_3d.device
+                vertices3d, device=gaussian_3d.device, batch_size=B
             )  # (B, N, 3, 3)
+            if local_frames.shape[0] == 1 and B > 1:
+                local_frames = local_frames.expand(B, -1, -1, -1)
         local_feats_prefusion = local_feats
         # Use all views for supervision; `data.num_views` only controls
         # whether decoder input is per-view (1) or fused (4).
@@ -241,8 +243,9 @@ class NlfGaussianModel(L.LightningModule):
                 gaussian_3d_view = gaussian_3d_decode[view_idx]
                 offset_local = gaussian_params_view.get("offset", None)
                 if offset_local is not None:
+                    frame_idx = view_idx if local_frames_decode.shape[0] > 1 else 0
                     gaussian_3d_view = gaussian_3d_view + torch.einsum(
-                        "nij,nj->ni", local_frames_decode[view_idx], offset_local
+                        "nij,nj->ni", local_frames_decode[frame_idx], offset_local
                     )
 
                 rendered_imgs = self.renderer.render(
