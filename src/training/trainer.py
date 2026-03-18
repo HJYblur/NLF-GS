@@ -51,10 +51,12 @@ class NlfGaussianModel(L.LightningModule):
         # Read optimizer & scheduler settings from config and save as hyperparameters
         train_cfg = get_config().get("train", {})
         lr = float(train_cfg.get("lr", 1e-4))
-        wd = float(train_cfg.get("weight_decay", 0.0))
+        wd = float(train_cfg.get("wd", train_cfg.get("weight_decay", 0.01)))
         betas = train_cfg.get("betas", [0.9, 0.99])
         eps = float(train_cfg.get("eps", 1e-8))
         warmup_ratio = float(train_cfg.get("warmup_ratio", 0.05))
+        bb_lr_mult = float(train_cfg.get("bb_lr_mult", 0.1))
+        min_lr_ratio = float(train_cfg.get("min_lr_ratio", 0.05))
         scheduler_name = train_cfg.get("scheduler", "cosine")
         # Persist to hparams for use in configure_optimizers
         self.save_hyperparameters({
@@ -63,6 +65,8 @@ class NlfGaussianModel(L.LightningModule):
             "betas": betas,
             "eps": eps,
             "warmup_ratio": warmup_ratio,
+            "bb_lr_mult": bb_lr_mult,
+            "min_lr_ratio": min_lr_ratio,
             "scheduler": scheduler_name,
         })
 
@@ -89,6 +93,8 @@ class NlfGaussianModel(L.LightningModule):
         self._log_train_losses = bool(train_cfg.get("log_train_losses", True))
         self._log_val_losses = bool(train_cfg.get("log_val_losses", True))
         self._tracked_loss_names = train_cfg.get("tracked_losses", None)
+        raw_test_renders = train_cfg.get("test_renders", [7, 100, 350])
+        self._test_renders = {int(subject_id) for subject_id in raw_test_renders}
 
     def training_step(self, batch: Dict[str, Any], batch_idx: int):
         loss_dict = self.shared_step(batch=batch, batch_idx=batch_idx, stage="train")
@@ -357,40 +363,110 @@ class NlfGaussianModel(L.LightningModule):
             p.requires_grad = False
 
     def configure_optimizers(self):
-        trainable_params = list(self.decoder.parameters())
-        if not self.train_decoder_only:
-            trainable_params += [
-                p for p in self.backbone.parameters() if p.requires_grad
-            ]
+        base_lr = float(self.hparams.lr)              # decoder lr
+        bb_mult = float(getattr(self.hparams, "bb_lr_mult", 0.1))
+        wd = float(self.hparams.wd)
+
+        def is_no_decay(name, param):
+            if param.ndim == 1:
+                return True
+            if name.endswith(".bias"):
+                return True
+            n = name.lower()
+            if "bn" in n or "norm" in n:
+                return True
+            return False
+
+        dec_decay, dec_no_decay = [], []
+        for n, p in self.decoder.named_parameters():
+            if not p.requires_grad:
+                continue
+            (dec_no_decay if is_no_decay(n, p) else dec_decay).append(p)
+
+        bb_decay, bb_no_decay = [], []
+        for n, p in self.backbone.named_parameters():
+            if not p.requires_grad:
+                continue
+            (bb_no_decay if is_no_decay(n, p) else bb_decay).append(p)
 
         optimizer = torch.optim.AdamW(
-            trainable_params,
-            lr=float(self.hparams.lr),
-            weight_decay=float(self.hparams.wd),
+            [
+                {
+                    "name": "decoder_decay",
+                    "params": dec_decay,
+                    "lr": base_lr,
+                    "weight_decay": wd,
+                },
+                {
+                    "name": "decoder_no_decay",
+                    "params": dec_no_decay,
+                    "lr": base_lr,
+                    "weight_decay": 0.0,
+                },
+                {
+                    "name": "backbone_decay",
+                    "params": bb_decay,
+                    "lr": base_lr * bb_mult,
+                    "weight_decay": wd,
+                },
+                {
+                    "name": "backbone_no_decay",
+                    "params": bb_no_decay,
+                    "lr": base_lr * bb_mult,
+                    "weight_decay": 0.0,
+                },
+            ],
             betas=tuple(self.hparams.betas) if isinstance(self.hparams.betas, (list, tuple)) else (0.9, 0.99),
             eps=float(self.hparams.eps),
         )
 
-        total_steps = self.trainer.estimated_stepping_batches
-        warmup_steps = int(float(self.hparams.warmup_ratio) * max(1, total_steps))
+        total_steps = int(self.trainer.estimated_stepping_batches)
+        warmup_ratio = float(self.hparams.warmup_ratio)
+        warmup_ratio = min(1.0, max(0.0, warmup_ratio))
+        warmup_steps = int(warmup_ratio * max(1, total_steps))
+        min_lr_ratio = float(getattr(self.hparams, "min_lr_ratio", 0.05))
 
         def lr_lambda(step):
-            if step < warmup_steps:
-                return step / max(1, warmup_steps)
-            progress = (step - warmup_steps) / max(1, total_steps - warmup_steps)
-            # cosine decay to zero
-            return 0.5 * (1.0 + math.cos(math.pi * progress))
+            if warmup_steps > 0 and step < warmup_steps:
+                return (step + 1) / warmup_steps
+            denom = max(1, total_steps - warmup_steps)
+            progress = (step - warmup_steps) / denom
+            progress = min(1.0, max(0.0, progress))
+            cosine = 0.5 * (1.0 + math.cos(math.pi * progress))
+            return min_lr_ratio + (1.0 - min_lr_ratio) * cosine
 
         scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=lr_lambda)
 
-        return {
-            "optimizer": optimizer,
-            "lr_scheduler": {"scheduler": scheduler, "interval": "step"},
-        }
+        return {"optimizer": optimizer, "lr_scheduler": {"scheduler": scheduler, "interval": "step"}}
+    
+    def on_train_batch_end(self):
+        param_groups = self.trainer.optimizers[0].param_groups
 
-    def on_train_batch_end(self, outputs, batch, batch_idx):
-        lr = self.trainer.optimizers[0].param_groups[0]["lr"]
-        self.log("train/lr", lr, prog_bar=True)
+        decoder_lrs = [
+            group["lr"]
+            for group in param_groups
+            if str(group.get("name", "")).startswith("decoder")
+        ]
+        backbone_lrs = [
+            group["lr"]
+            for group in param_groups
+            if str(group.get("name", "")).startswith("backbone")
+        ]
+
+        decoder_lr = float(decoder_lrs[0]) if decoder_lrs else float(param_groups[0]["lr"])
+        backbone_lr = (
+            float(backbone_lrs[0])
+            if backbone_lrs
+            else float(param_groups[min(2, len(param_groups) - 1)]["lr"])
+        )
+
+        # Keep legacy key for dashboards that already track train/lr.
+        self.log("train/lr", decoder_lr, prog_bar=True)
+        # Shared namespace keys are easier to overlay in a single WandB panel.
+        self.log("train/lr/decoder", decoder_lr, prog_bar=True)
+        self.log("train/lr/backbone", backbone_lr, prog_bar=False)
+        self.log("train/lr_decoder", decoder_lr, prog_bar=True)
+        self.log("train/lr_backbone", backbone_lr, prog_bar=False)
 
     def process_input(self, batch):
         """Extract tensors from the dataset batch and normalize shape/device.
@@ -486,8 +562,7 @@ class NlfGaussianModel(L.LightningModule):
         return img_float, img_uint8, masks_float, (B, H, W), subject, view_names, vertices3d, vertices2d
 
     def _is_test_render_batch(self, subject: str) -> bool:
-        test_renders = [0, 7, 50, 100, 200, 350]
-        return int(subject) in test_renders
+        return int(subject) in self._test_renders
 
     def _log_loss_dict(self, loss_dict: Dict[str, torch.Tensor], stage: str) -> None:
         should_log = (stage == "train" and self._log_train_losses) or (

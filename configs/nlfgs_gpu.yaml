@@ -75,15 +75,18 @@ train:
   precision: 16-mixed # Use AMP (fp16) to halve VRAM on activations & weights
   batch_size: 4 # Must match num_views (4 views fused per subject)
   num_workers: 2
-  epochs: 100
+  epochs: 10
   val_ratio: 0.2
 
   # Optimizer & scheduler settings
   lr: 0.0001
-  weight_decay: 0.0
+  bb_lr_mult: 0.1 # backbone lr = lr * bb_lr_mult (try 0.01 if unstable)
+  wd: 0.01
+  weight_decay: 0.01 # backward-compatible alias for wd
   betas: [0.9, 0.99]
   eps: 1.0e-8
-  warmup_ratio: 0.1 # fraction of total steps used for linear warmup
+  warmup_ratio: 0.05 # 5-10% warmup is recommended
+  min_lr_ratio: 0.05 # cosine floor; keep > 0 to avoid stalling
   scheduler: cosine
 
   # Loss weights
@@ -102,6 +105,7 @@ train:
   log_train_losses: true
   log_val_losses: true
   tracked_losses: null # null logs all losses; set list like ["loss", "l1"] to filter
+  test_renders: [7, 100, 350] # subject IDs whose renders are logged online
 
 analysis:
   dump_local_feats: false # set true to save local_feats and collision_data tensors
