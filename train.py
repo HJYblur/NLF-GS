@@ -2,6 +2,7 @@ import argparse
 import logging
 import sys
 import os
+import json
 from pathlib import Path
 from typing import Any, Dict
 
@@ -31,6 +32,20 @@ def _flatten_dict(data: Dict[str, Any], prefix: str = "") -> Dict[str, Any]:
         else:
             flat[dotted_key] = value
     return flat
+
+
+def _to_wandb_primitive(value: Any) -> Any:
+    """Convert nested config values into JSON/W&B-safe primitives."""
+    if isinstance(value, dict):
+        return {str(k): _to_wandb_primitive(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_to_wandb_primitive(v) for v in value]
+    if isinstance(value, Path):
+        return str(value)
+    if isinstance(value, (str, int, float, bool)) or value is None:
+        return value
+    # Fallback for unsupported objects.
+    return str(value)
 
 
 def main():
@@ -151,13 +166,29 @@ def main():
         save_dir=str(Path(__file__).parent / "logs"),
         log_model=False,
     )
-    # Log full config both nested and flattened, because some UIs only expose
-    # searchable hyperparameters for flat key/value pairs.
-    flat_cfg = _flatten_dict(cfg)
-    wandb_logger.log_hyperparams({"config": cfg, "config_path": args.config, **flat_cfg})
+    # Keep Lightning hyperparam logging minimal and push the full config directly
+    # to wandb run config, which is more reliable for nested structures.
+    wandb_logger.log_hyperparams({"config_path": args.config})
     if hasattr(wandb_logger, "experiment") and wandb_logger.experiment is not None:
-        wandb_logger.experiment.config.update({"config_path": args.config}, allow_val_change=True)
-        wandb_logger.experiment.config.update(flat_cfg, allow_val_change=True)
+        safe_cfg = _to_wandb_primitive(cfg)
+        flat_cfg = _flatten_dict(safe_cfg)
+        # 1) canonical nested config tree
+        wandb_logger.experiment.config.update(safe_cfg, allow_val_change=True)
+        # 2) extra flattened view for easier search/filter in the UI
+        wandb_logger.experiment.config.update(
+            {f"flat::{k}": v for k, v in flat_cfg.items()},
+            allow_val_change=True,
+        )
+        # 3) raw config path and YAML snapshot for exact reproducibility
+        config_text = Path(args.config).read_text(encoding="utf-8")
+        wandb_logger.experiment.config.update(
+            {
+                "config_path": args.config,
+                "config_yaml": config_text,
+                "config_json": json.dumps(safe_cfg, sort_keys=True),
+            },
+            allow_val_change=True,
+        )
 
     # Trainer precision and accelerator
     precision = cfg.get("train", {}).get("precision")
