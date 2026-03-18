@@ -1,6 +1,5 @@
 from typing import Any, Dict, Optional
 from contextlib import nullcontext
-import logging
 from pathlib import Path
 import math
 import re
@@ -27,7 +26,6 @@ class NlfGaussianModel(L.LightningModule):
         train_decoder_only: bool = True,
     ):
         super().__init__()
-        self._logger = logging.getLogger("train")
         self._profile_gpu = bool(get_config().get("train", {}).get("profile_gpu", False))
         self.use_identity_encoder = bool(
             get_config().get("identity_encoder", {}).get("use_flag", True)
@@ -73,7 +71,6 @@ class NlfGaussianModel(L.LightningModule):
         # If True, freeze all parameters except the decoder's so only decoder gets updated.
         if self.train_decoder_only:
             self.freeze_encoder()
-            self._logger.info("Frozen encoder parameters.")
 
         # Feature-dump settings for PCA analysis
         analysis_cfg = get_config().get("analysis", {})
@@ -109,8 +106,6 @@ class NlfGaussianModel(L.LightningModule):
     def shared_step(self, batch: Dict[str, Any], batch_idx: int, stage: str) -> torch.Tensor:
         # Extract data from batch
         img_float, img_uint8, masks_float, (B, H, W), subject, view_names, vertices3d, vertices2d = self.process_input(batch)
-        if stage == "train":
-            self._logger.info(f"Processing subject: {subject}, views: {view_names}")
 
         grad_ctx = torch.inference_mode() if self.train_decoder_only else nullcontext()
         with grad_ctx:
@@ -193,14 +188,6 @@ class NlfGaussianModel(L.LightningModule):
         )
 
         if not self._shape_debug_logged:
-            if isinstance(feats, dict):
-                fmap_shapes = {k: tuple(v.shape) for k, v in feats.items()}
-                self._logger.info(f"FPN feature map shapes: {fmap_shapes}")
-                self._logger.info(
-                    f"Per-level sampled feature shapes: {self.avatar_estimator.last_sampled_level_shapes}"
-                )
-            self._logger.info(f"Concatenated local_feats shape: {tuple(local_feats.shape)}")
-            self._logger.info(f"Decoder expected input dim: {self.decoder.in_dim}")
             assert local_feats.shape[-1] == self.decoder.in_dim, (
                 f"Local feature dim {local_feats.shape[-1]} != decoder.in_dim {self.decoder.in_dim}"
             )
@@ -329,7 +316,6 @@ class NlfGaussianModel(L.LightningModule):
 
         out_path = self._dump_dir / f"local_feats_{subject}.pt"
         torch.save(local_feats.detach().cpu(), out_path)
-        self._logger.info(f"Dumped local_feats for subject {subject} → {out_path}")
 
         # Companion file for pre/post fusion quality analysis
         fusion_path = self._dump_dir / f"fusion_data_{subject}.pt"
@@ -342,7 +328,6 @@ class NlfGaussianModel(L.LightningModule):
             },
             fusion_path,
         )
-        self._logger.info(f"Dumped fusion_data for subject {subject} → {fusion_path}")
 
         # Companion file for projection-collision analysis
         H, W = int(img_size[0]), int(img_size[1])
@@ -356,7 +341,6 @@ class NlfGaussianModel(L.LightningModule):
             },
             collision_path,
         )
-        self._logger.info(f"Dumped collision_data for subject {subject} → {collision_path}")
 
     def freeze_encoder(self):
         for p in self.identity_encoder.parameters():
@@ -439,7 +423,7 @@ class NlfGaussianModel(L.LightningModule):
 
         return {"optimizer": optimizer, "lr_scheduler": {"scheduler": scheduler, "interval": "step"}}
     
-    def on_train_batch_end(self):
+    def on_train_batch_end(self, outputs, batch, batch_idx):
         param_groups = self.trainer.optimizers[0].param_groups
 
         decoder_lrs = [
@@ -460,11 +444,6 @@ class NlfGaussianModel(L.LightningModule):
             else float(param_groups[min(2, len(param_groups) - 1)]["lr"])
         )
 
-        # Keep legacy key for dashboards that already track train/lr.
-        self.log("train/lr", decoder_lr, prog_bar=True)
-        # Shared namespace keys are easier to overlay in a single WandB panel.
-        self.log("train/lr/decoder", decoder_lr, prog_bar=True)
-        self.log("train/lr/backbone", backbone_lr, prog_bar=False)
         self.log("train/lr_decoder", decoder_lr, prog_bar=True)
         self.log("train/lr_backbone", backbone_lr, prog_bar=False)
 

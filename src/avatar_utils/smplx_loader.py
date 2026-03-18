@@ -1,12 +1,9 @@
-import logging
 import pickle
 from pathlib import Path
 
 import numpy
 import torch
 import trimesh
-
-_logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Cached SMPLX body model (loaded once per model_path + gender + num_pca_comps)
@@ -31,7 +28,6 @@ def _get_smplx_model(
             num_pca_comps=num_pca_comps,
             flat_hand_mean=True,
         )
-        _logger.info("Loaded SMPLX model from %s (gender=%s, pca=%d)", model_path, gender, num_pca_comps)
     return _SMPLX_MODEL_CACHE[key]
 
 
@@ -66,11 +62,6 @@ def load_smplx_coord3d(path: str):
         return _load_smplx_coord3d_from_params(str(p))
 
     # Legacy / fallback: load directly from mesh file
-    _logger.warning(
-        "Loading SMPLX vertices from %s via trimesh – vertex ordering may "
-        "not match the avatar template.  Prefer passing smplx_param.pkl.",
-        path,
-    )
     mesh = trimesh.load(path)
     vertices = torch.from_numpy(mesh.vertices).float()
     return vertices

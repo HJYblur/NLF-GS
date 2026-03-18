@@ -7,11 +7,8 @@ consumes the most GPU memory.
 Enable by setting ``train.profile_gpu: True`` in your config YAML.
 """
 
-import logging
 import torch
 import lightning as L
-
-_logger = logging.getLogger("train")
 
 
 def _gpu_mem_mb() -> dict:
@@ -27,15 +24,8 @@ def _gpu_mem_mb() -> dict:
 
 
 def _log_mem(tag: str) -> None:
-    stats = _gpu_mem_mb()
-    if stats:
-        _logger.info(
-            f"[GPU-MEM] {tag:30s} | "
-            f"alloc={stats['allocated_MB']:.1f} MB  "
-            f"reserved={stats['reserved_MB']:.1f} MB  "
-            f"peak_alloc={stats['peak_allocated_MB']:.1f} MB  "
-            f"peak_reserved={stats['peak_reserved_MB']:.1f} MB"
-        )
+    _ = tag
+    _ = _gpu_mem_mb()
 
 
 class GpuMemoryProfilerCallback(L.Callback):
