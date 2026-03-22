@@ -44,7 +44,6 @@ class NlfGaussianModel(L.LightningModule):
             "_template_posenc", template_posenc, persistent=False
         )  # (N, C_pe)
         self.template_posenc_dim = int(template_posenc.shape[-1])
-        self.decoder.extend_input_dim(self.template_posenc_dim)
         self.renderer = renderer
         self.loss_fn = LossFunctions()    
         self.train_decoder_only = train_decoder_only
