@@ -55,6 +55,47 @@ class GaussianDecoder(nn.Module):
         )
 
         # self._init_output_bias()
+        self.register_buffer("_template_scales", None, persistent=False)
+        self.register_buffer("_template_rotation", None, persistent=False)
+        self.register_buffer("_template_alpha", None, persistent=False)
+        self.register_buffer("_template_sh", None, persistent=False)
+
+    def set_template_initial_values(self, template_avatar: dict | None):
+        """Load per-Gaussian initialization values from avatar template data.
+
+        Expected keys in `template_avatar`:
+          - scales: log-scales in template space (N, 3)
+          - rots: quaternion rotations (N, 4)
+          - opacities: opacity values (N, 1) or (N,)
+          - shs: SH DC terms (N, 3)
+        """
+        if template_avatar is None:
+            self._template_scales = None
+            self._template_rotation = None
+            self._template_alpha = None
+            self._template_sh = None
+            return
+
+        with torch.no_grad():
+            # Template stores scale in log-space; renderer expects linear scales.
+            scales = torch.exp(template_avatar["scales"].detach().to(torch.float32))
+            scales = scales.clamp(min=self.scale_min, max=self.scale_max)
+            rots = template_avatar["rots"].detach().to(torch.float32)
+            rots = rots / (torch.linalg.norm(rots, dim=-1, keepdim=True) + 1e-8)
+            alpha = template_avatar["opacities"].detach().to(torch.float32).view(-1)
+            alpha = alpha.clamp(min=self.alpha_min, max=self.alpha_max)
+
+            sh_dim = self.out_dim - (3 + 4 + 1 + 3)
+            sh = torch.zeros((scales.shape[0], sh_dim), dtype=torch.float32)
+            if sh_dim > 0:
+                sh_dc = template_avatar["shs"].detach().to(torch.float32)
+                sh[:, : min(3, sh_dim)] = sh_dc[:, : min(3, sh_dim)]
+                sh = sh.clamp(min=self.sh_min, max=self.sh_max)
+
+            self._template_scales = scales
+            self._template_rotation = rots
+            self._template_alpha = alpha
+            self._template_sh = sh
 
     def _init_output_bias(self):
         """Set the bias of the last MLP layer to produce sensible initial Gaussian params.
@@ -145,6 +186,39 @@ class GaussianDecoder(nn.Module):
             sh_nc = (
                 None if (sh_nc is None or sh_nc.numel() == 0) else sh_nc.squeeze(0)
             )  # (nc,K)
+
+            if self._template_scales is not None:
+                if end > self._template_scales.shape[0]:
+                    raise ValueError(
+                        f"Template has {self._template_scales.shape[0]} gaussians, got decoder N={N}"
+                    )
+                tpl_scales = self._template_scales[start:end].to(
+                    device=scales_nc.device, dtype=scales_nc.dtype
+                )
+                tpl_rot = self._template_rotation[start:end].to(
+                    device=rot_nc.device, dtype=rot_nc.dtype
+                )
+                tpl_alpha = self._template_alpha[start:end].to(
+                    device=alpha_nc.device, dtype=alpha_nc.dtype
+                ).unsqueeze(-1)
+                tpl_sh = self._template_sh[start:end].to(
+                    device=sh_nc.device if sh_nc is not None else scales_nc.device,
+                    dtype=sh_nc.dtype if sh_nc is not None else scales_nc.dtype,
+                )
+
+                # Predict residuals around template initialization.
+                scales_nc = (tpl_scales + 0.5 * (scales_nc - tpl_scales)).clamp(
+                    min=self.scale_min, max=self.scale_max
+                )
+                rot_nc = tpl_rot + 0.25 * rot_nc
+                rot_nc = rot_nc / (torch.linalg.norm(rot_nc, dim=-1, keepdim=True) + 1e-8)
+                alpha_nc = (tpl_alpha + 0.5 * (alpha_nc - tpl_alpha)).clamp(
+                    min=self.alpha_min, max=self.alpha_max
+                )
+                if sh_nc is not None:
+                    sh_nc = (tpl_sh + 0.5 * (sh_nc - tpl_sh)).clamp(
+                        min=self.sh_min, max=self.sh_max
+                    )
 
             parts["scales"].append(scales_nc)
             parts["rotation"].append(rot_nc)

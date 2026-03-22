@@ -63,6 +63,10 @@ class AvatarTemplate:
         self._barycentric_coords = self.get_barycentric_coords()
         self._avatar = self.load_avatar_template(mode="default")
         self._mesh_faces = self.mesh_faces  # Preload mesh faces property
+        self._posenc_levels = int(get_cfg("avatar.template.posenc_levels", 4))
+        self._gaussian_posenc = self._build_gaussian_positional_encoding(
+            self.avatar["xyz"].to(torch.float32), self._posenc_levels
+        )
 
     def load_cano_mesh(self):
         if not os.path.exists(self.cano_mesh_path):
@@ -259,6 +263,25 @@ class AvatarTemplate:
             B4_list = [[float(x) for x in row] for row in B4_list]
             self._barycentric_coords = torch.tensor(B4_list, dtype=torch.float32)
         return self._barycentric_coords
+
+    def _build_gaussian_positional_encoding(
+        self, xyz: torch.Tensor, levels: int
+    ) -> torch.Tensor:
+        """Build sinusoidal PE per Gaussian using template coordinates."""
+        if levels <= 0:
+            return xyz.new_zeros((xyz.shape[0], 0))
+        freqs = (
+            (2.0 ** torch.arange(levels, dtype=xyz.dtype, device=xyz.device))
+            * torch.pi
+        )
+        xyz_f = xyz.unsqueeze(-1) * freqs.view(1, 1, levels)  # (N,3,L)
+        sin_part = torch.sin(xyz_f).reshape(xyz.shape[0], -1)
+        cos_part = torch.cos(xyz_f).reshape(xyz.shape[0], -1)
+        return torch.cat([xyz, sin_part, cos_part], dim=-1)
+
+    @property
+    def gaussian_positional_encoding(self):
+        return self._gaussian_posenc
 
     @property
     def barycentric_coords(self):

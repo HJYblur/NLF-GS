@@ -4,6 +4,7 @@ from pathlib import Path
 import math
 import re
 import torch
+import torch.nn as nn
 from torch.utils.data import DataLoader
 import lightning as L
 from encoder.feature_extractor import FeatureExtractor
@@ -38,6 +39,22 @@ class NlfGaussianModel(L.LightningModule):
         self.avatar_estimator = AvatarGaussianEstimator(self.template)
         self.identity_encoder = identity_encoder
         self.decoder = decoder
+        self.decoder.set_template_initial_values(self.template.avatar)
+        template_posenc = self.template.gaussian_positional_encoding
+        self.register_buffer(
+            "_template_posenc", template_posenc, persistent=False
+        )  # (N, C_pe)
+        self.template_posenc_dim = int(template_posenc.shape[-1])
+        if self.template_posenc_dim > 0:
+            adapted_in_dim = self.decoder.in_dim + self.template_posenc_dim
+            self.decoder_input_adapter = nn.Linear(adapted_in_dim, self.decoder.in_dim)
+            with torch.no_grad():
+                self.decoder_input_adapter.weight.zero_()
+                self.decoder_input_adapter.bias.zero_()
+                eye = torch.eye(self.decoder.in_dim, dtype=self.decoder_input_adapter.weight.dtype)
+                self.decoder_input_adapter.weight[:, : self.decoder.in_dim] = eye
+        else:
+            self.decoder_input_adapter = nn.Identity()
         self.renderer = renderer
         self.loss_fn = LossFunctions()    
         self.train_decoder_only = train_decoder_only
@@ -152,6 +169,13 @@ class NlfGaussianModel(L.LightningModule):
                     feats, vertices3d, vertices2d, img_shape=(H, W)
                 )
             )  # (B, N, C_local), (B, N), (B, N, 3), (B, N, 2)
+            if self.template_posenc_dim > 0:
+                pe = self._template_posenc.to(
+                    device=local_feats.device, dtype=local_feats.dtype
+                )
+                pe = pe.unsqueeze(0).expand(local_feats.shape[0], -1, -1)
+                local_feats = torch.cat([local_feats, pe], dim=-1)
+                local_feats = self.decoder_input_adapter(local_feats)
             local_frames = self.avatar_estimator.compute_gaussian_local_frames(
                 vertices3d, device=gaussian_3d.device, batch_size=B
             )  # (B, N, 3, 3)
