@@ -94,9 +94,18 @@ def _iter_identities(
             if end_id is not None and subject_id > end_id:
                 continue
 
-            obj_files = list(entry.glob("*.obj"))
-            if obj_files:
-                yield entry.name, obj_files[0]
+            # Filter macOS AppleDouble sidecar files (e.g. ._0001.obj).
+            obj_files = sorted(
+                p
+                for p in entry.glob("*.obj")
+                if not p.name.startswith(".") and not p.name.startswith("._")
+            )
+            if not obj_files:
+                continue
+
+            # Prefer canonical subject-named OBJ when present.
+            canonical_obj = entry / f"{entry.name}.obj"
+            yield entry.name, canonical_obj if canonical_obj in obj_files else obj_files[0]
 
 
 def _find_texture_for_obj(obj_path: Path) -> Path | None:
@@ -182,6 +191,9 @@ def _render_views(
     """Render THuman meshes from canonical camera positions.
     
     """
+    if not meshes:
+        raise ValueError(f"No renderable meshes loaded for identity {identity}")
+
     # print min and max location of all meshes for debugging
     all_vertices = np.vstack([m.vertices for m in meshes])
     print(
@@ -360,6 +372,9 @@ def preprocess_thuman(
         target_dir = out_root / identity
         target_dir.mkdir(parents=True, exist_ok=True)
         meshes = _load_meshes(obj_path)
+        if not meshes:
+            print(f"Skipping {identity}: failed to load meshes from {obj_path}")
+            continue
         texture_path = _find_texture_for_obj(obj_path)
         _render_views(meshes, target_dir, texture_path, identity)
         print(f"Rendered {identity}")
