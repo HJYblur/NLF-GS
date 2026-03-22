@@ -60,6 +60,21 @@ class GaussianDecoder(nn.Module):
         self.register_buffer("_template_alpha", None, persistent=False)
         self.register_buffer("_template_sh", None, persistent=False)
 
+    def extend_input_dim(self, extra_dim: int):
+        """Extend decoder input dimension and preserve existing fc1 weights."""
+        extra_dim = int(extra_dim)
+        if extra_dim <= 0:
+            return
+        old_fc1 = self.fc1
+        new_in_dim = self.in_dim + extra_dim
+        new_fc1 = nn.Linear(new_in_dim, self.hidden)
+        with torch.no_grad():
+            new_fc1.weight.zero_()
+            new_fc1.bias.copy_(old_fc1.bias)
+            new_fc1.weight[:, : self.in_dim] = old_fc1.weight
+        self.fc1 = new_fc1
+        self.in_dim = new_in_dim
+
     def set_template_initial_values(self, template_avatar: dict | None):
         """Load per-Gaussian initialization values from avatar template data.
 
