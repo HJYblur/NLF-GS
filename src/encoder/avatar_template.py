@@ -75,6 +75,9 @@ class AvatarTemplate:
                 "default": 1.0,
             },
         )
+        self._edge_scale_factor = float(
+            get_cfg("avatar.template.edge_scale_factor", 0.5)
+        )
         self._avatar = self.load_avatar_template(mode="default")
         self._mesh_faces = self.mesh_faces  # Preload mesh faces property
         self._posenc_levels = int(get_cfg("avatar.template.posenc_levels", 4))
@@ -267,10 +270,12 @@ class AvatarTemplate:
         e2 = e2 / (torch.norm(e2) + 1e-9)
         R_t = torch.stack([e1, e2, normal], dim=1)  # 3×3 rotation matrix (columns)
 
-        # Calculate face area to determine Gaussian scale
-        face_area = torch.norm(torch.linalg.cross(v1_t - v0_t, v2_t - v0_t)) / 2.0
-        gaussian_area = face_area / float(num_gaussians)
-        r = torch.sqrt(gaussian_area / float(np.pi))
+        # Base scale from average triangle edge length (instead of area).
+        e01 = torch.norm(v1_t - v0_t)
+        e12 = torch.norm(v2_t - v1_t)
+        e20 = torch.norm(v0_t - v2_t)
+        avg_edge_len = (e01 + e12 + e20) / 3.0
+        r = self._edge_scale_factor * avg_edge_len / np.sqrt(float(num_gaussians))
         if vmin is not None and vmax is not None:
             r = r * self._body_part_scale_multiplier(center, vmin=vmin, vmax=vmax)
         std_scale = torch.tensor([r, r, r], dtype=torch.float32)
