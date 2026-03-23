@@ -22,7 +22,11 @@ class GaussianDecoder(nn.Module):
         dec_cfg = cfg.get("decoder", {})
 
         self.debug = debug
-        self.in_dim = int(dec_cfg.get("in_dim", cfg.get("model", {}).get("local_feature_dim", 512)))
+        self.base_in_dim = int(
+            dec_cfg.get("in_dim", cfg.get("model", {}).get("local_feature_dim", 512))
+        )
+        self.PE_dim = int(dec_cfg.get("PE_dim", 0))
+        self.in_dim = self.base_in_dim + self.PE_dim
         self.hidden = int(dec_cfg.get("hidden", 256))
         self.out_dim = int(dec_cfg.get("out_dim", 56))
         self.z_dim = int(cfg.get("identity_encoder", {}).get("latent_dim", 64))
@@ -64,7 +68,7 @@ class GaussianDecoder(nn.Module):
         """Load per-Gaussian initialization values from avatar template data.
 
         Expected keys in `template_avatar`:
-          - scales: log-scales in template space (N, 3)
+          - scales: linear scales in template space (N, 3)
           - rots: quaternion rotations (N, 4)
           - opacities: opacity values (N, 1) or (N,)
           - shs: SH DC terms (N, 3)

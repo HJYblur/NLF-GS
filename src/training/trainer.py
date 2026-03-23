@@ -158,10 +158,15 @@ class NlfGaussianModel(L.LightningModule):
                     feats, vertices3d, vertices2d, img_shape=(H, W)
                 )
             )  # (B, N, C_local), (B, N), (B, N, 3), (B, N, 2)
-            if self.template_posenc_dim > 0:
+            if self.decoder.PE_dim > 0:
                 pe = self._template_posenc.to(
                     device=local_feats.device, dtype=local_feats.dtype
                 )
+                if pe.shape[-1] < self.decoder.PE_dim:
+                    raise ValueError(
+                        f"decoder.PE_dim={self.decoder.PE_dim} exceeds template PE dim={pe.shape[-1]}"
+                    )
+                pe = pe[:, : self.decoder.PE_dim]
                 pe = pe.unsqueeze(0).expand(local_feats.shape[0], -1, -1)
                 local_feats = torch.cat([local_feats, pe], dim=-1)
             local_frames = self.avatar_estimator.compute_gaussian_local_frames(

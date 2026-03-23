@@ -55,7 +55,8 @@ avatar:
     posenc_levels: 4
 
 decoder:
-  in_dim: 795 # local feature dim (768) + template PE dim (3 + 3*2*4 = 27)
+  in_dim: 768 # base local feature dim (without template PE)
+  PE_dim: 27 # set to 0 to disable template positional encoding
   hidden: 256
   sh_degree: 0
   out_dim: 14
