@@ -37,9 +37,6 @@ class GaussianDecoder(nn.Module):
         self.sh_min = float(dec_cfg.get("sh_min", -1.0))
         self.sh_max = float(dec_cfg.get("sh_max", 1.0))
         self.offset_scale = float(dec_cfg.get("offset_scale", 0.01))
-        # Template loading behavior for scale values: "auto" | "log" | "linear"
-        self.template_scale_space = str(dec_cfg.get("template_scale_space", "auto")).lower()
-        self.template_scale_multiplier = float(dec_cfg.get("template_scale_multiplier", 1.0))
 
         # first local block
         self.fc1 = nn.Linear(self.in_dim, self.hidden)
@@ -80,15 +77,7 @@ class GaussianDecoder(nn.Module):
             return
 
         with torch.no_grad():
-            raw_scales = template_avatar["scales"].detach().to(torch.float32)
-            if self.template_scale_space == "log":
-                scales = torch.exp(raw_scales)
-            elif self.template_scale_space == "linear":
-                scales = raw_scales
-            else:
-                # Auto: legacy templates usually store log-scales (mostly negative).
-                scales = torch.exp(raw_scales) if float(raw_scales.mean()) < 0.0 else raw_scales
-            scales = scales * self.template_scale_multiplier
+            scales = template_avatar["scales"].detach().to(torch.float32)
             scales = scales.clamp(min=self.scale_min, max=self.scale_max)
             rots = template_avatar["rots"].detach().to(torch.float32)
             rots = rots / (torch.linalg.norm(rots, dim=-1, keepdim=True) + 1e-8)

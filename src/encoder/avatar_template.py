@@ -222,7 +222,6 @@ class AvatarTemplate:
         face_area = torch.norm(torch.linalg.cross(v1_t - v0_t, v2_t - v0_t)) / 2.0
         gaussian_area = face_area / float(num_gaussians)
         r = torch.sqrt(gaussian_area / float(np.pi))
-        r = torch.log(r)
         std_scale = torch.tensor([r, r, r], dtype=torch.float32)
 
         # Initialize tensors

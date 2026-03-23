@@ -61,8 +61,6 @@ decoder:
   out_dim: 14
   scale_min: 1.0e-6 # sigmoid lower bound for Gaussian scale
   scale_max: 1.0e-2 # sigmoid upper bound for Gaussian scale
-  template_scale_space: auto # auto | log | linear
-  template_scale_multiplier: 1.0
   alpha_min: 0.0 # lower bound for opacity
   alpha_max: 1.0 # upper bound for opacity
   rot_min: -1.0 # pre-normalization lower bound for quaternion components
