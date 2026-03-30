@@ -53,6 +53,17 @@ avatar:
       - [0.2, 0.2, 0.6]
       - [0.3333333333, 0.3333333333, 0.3333333333]
     posenc_levels: 4
+    edge_scale_factor: 0.5
+    body_part_scale:
+      enabled: true
+      eye: 0.25
+      face: 0.4
+      head: 0.6
+      hand: 0.65
+      foot: 0.75
+      back: 1.15
+      thigh: 1.0
+      default: 1.0
 
 decoder:
   in_dim: 768 # base local feature dim (without template PE)

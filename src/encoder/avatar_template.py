@@ -61,6 +61,23 @@ class AvatarTemplate:
             else get_cfg("avatar.template._k_num_gaussians", 4)
         )
         self._barycentric_coords = self.get_barycentric_coords()
+        self._body_part_scale_cfg = get_cfg(
+            "avatar.template.body_part_scale",
+            {
+                "enabled": True,
+                "eye": 0.25,
+                "face": 0.4,
+                "head": 0.6,
+                "hand": 0.65,
+                "foot": 0.75,
+                "back": 1.15,
+                "thigh": 1.0,
+                "default": 1.0,
+            },
+        )
+        self._edge_scale_factor = float(
+            get_cfg("avatar.template.edge_scale_factor", 0.5)
+        )
         self._avatar = self.load_avatar_template(mode="default")
         self._mesh_faces = self.mesh_faces  # Preload mesh faces property
         self._posenc_levels = int(get_cfg("avatar.template.posenc_levels", 4))
@@ -147,6 +164,9 @@ class AvatarTemplate:
         # face[0]: [3 1 0]
         vertices = mesh.vertices
         faces = mesh.faces
+        vertices_t = torch.as_tensor(vertices, dtype=torch.float32)
+        vmin = vertices_t.min(dim=0).values
+        vmax = vertices_t.max(dim=0).values
 
         all_xyz = []
         all_shs = []
@@ -162,7 +182,7 @@ class AvatarTemplate:
 
             # generate gaussians for each face (returns tensors)
             xyzs, shs, opacity, scales, rots = self.generate_gaussians_per_face(
-                v0, v1, v2
+                v0, v1, v2, vmin=vmin, vmax=vmax
             )
 
             all_xyz.append(xyzs)
@@ -202,7 +222,39 @@ class AvatarTemplate:
 
         return data
 
-    def generate_gaussians_per_face(self, v0, v1, v2):
+    def _body_part_scale_multiplier(
+        self, center: torch.Tensor, vmin: torch.Tensor, vmax: torch.Tensor
+    ) -> float:
+        cfg = self._body_part_scale_cfg
+        if not bool(cfg.get("enabled", True)):
+            return 1.0
+
+        uvw = (center - vmin) / (vmax - vmin + 1e-8)
+        x, y, z = float(uvw[0]), float(uvw[1]), float(uvw[2])
+
+        # Head/face hierarchy first (smallest Gaussians)
+        if y > 0.76 and z > 0.56 and abs(x - 0.5) < 0.16:
+            return float(cfg.get("eye", 0.25))
+        if y > 0.72 and z > 0.50:
+            return float(cfg.get("face", 0.4))
+        if y > 0.70:
+            return float(cfg.get("head", 0.6))
+
+        # Extremities
+        if y > 0.42 and abs(x - 0.5) > 0.33:
+            return float(cfg.get("hand", 0.65))
+        if y < 0.08:
+            return float(cfg.get("foot", 0.75))
+
+        # Torso and lower body
+        if 0.35 <= y <= 0.70 and z < 0.44:
+            return float(cfg.get("back", 1.15))
+        if 0.18 <= y <= 0.42 and abs(x - 0.5) < 0.22:
+            return float(cfg.get("thigh", 1.0))
+
+        return float(cfg.get("default", 1.0))
+
+    def generate_gaussians_per_face(self, v0, v1, v2, vmin=None, vmax=None):
         num_gaussians = self._k_num_gaussians
 
         v0_t = torch.as_tensor(v0, dtype=torch.float32)
@@ -218,10 +270,14 @@ class AvatarTemplate:
         e2 = e2 / (torch.norm(e2) + 1e-9)
         R_t = torch.stack([e1, e2, normal], dim=1)  # 3×3 rotation matrix (columns)
 
-        # Calculate face area to determine Gaussian scale
-        face_area = torch.norm(torch.linalg.cross(v1_t - v0_t, v2_t - v0_t)) / 2.0
-        gaussian_area = face_area / float(num_gaussians)
-        r = torch.sqrt(gaussian_area / float(np.pi))
+        # Base scale from average triangle edge length (instead of area).
+        e01 = torch.norm(v1_t - v0_t)
+        e12 = torch.norm(v2_t - v1_t)
+        e20 = torch.norm(v0_t - v2_t)
+        avg_edge_len = (e01 + e12 + e20) / 3.0
+        r = self._edge_scale_factor * avg_edge_len / np.sqrt(float(num_gaussians))
+        if vmin is not None and vmax is not None:
+            r = r * self._body_part_scale_multiplier(center, vmin=vmin, vmax=vmax)
         std_scale = torch.tensor([r, r, r], dtype=torch.float32)
 
         # Initialize tensors
