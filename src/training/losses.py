@@ -145,7 +145,20 @@ class LossFunctions(nn.Module):
             return torch.zeros((), device=device)
         return gaussian_3d.var(dim=0, unbiased=False).mean()
 
-    def forward(self, pred_imgs, gt_imgs, gt_masks, gaussian_params=None, gaussian_3d=None):
+    def _resolve_weight(self, name: str, weight_overrides=None) -> float:
+        if weight_overrides is not None and name in weight_overrides:
+            return float(weight_overrides[name])
+        return float(getattr(self, name))
+
+    def forward(
+        self,
+        pred_imgs,
+        gt_imgs,
+        gt_masks,
+        gaussian_params=None,
+        gaussian_3d=None,
+        weight_overrides=None,
+    ):
         fg_mask = self._foreground_mask(gt_imgs)
 
         l1_loss = self._masked_l1(pred_imgs, gt_imgs, fg_mask)
@@ -168,13 +181,13 @@ class LossFunctions(nn.Module):
 
         ssim_loss = 1 - masked_ssim_val
         final_loss = (
-            self.weight_l1 * l1_loss
-            + self.weight_l2 * l2_loss
-            + self.weight_masked_ssim * ssim_loss
-            + self.weight_perceptual * perceptual_loss
-            + self.weight_silhouette * sil_loss
-            + self.weight_scale_reg * scale_reg
-            + self.weight_offset_reg * offset_reg
+            self._resolve_weight("weight_l1", weight_overrides) * l1_loss
+            + self._resolve_weight("weight_l2", weight_overrides) * l2_loss
+            + self._resolve_weight("weight_masked_ssim", weight_overrides) * ssim_loss
+            + self._resolve_weight("weight_perceptual", weight_overrides) * perceptual_loss
+            + self._resolve_weight("weight_silhouette", weight_overrides) * sil_loss
+            + self._resolve_weight("weight_scale_reg", weight_overrides) * scale_reg
+            + self._resolve_weight("weight_offset_reg", weight_overrides) * offset_reg
             # self.weight_opacity_reg * opacity_reg
             # self.weight_multiview_consistency * multiview_consistency
         )

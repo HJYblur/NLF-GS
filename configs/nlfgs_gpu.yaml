@@ -76,6 +76,7 @@ train:
   batch_size: 4 # Must match num_views (4 views fused per subject)
   num_workers: 2
   epochs: 10
+  max_steps: 25000
   val_ratio: 0.2
 
   # Optimizer & scheduler settings
@@ -88,6 +89,16 @@ train:
   warmup_ratio: 0.05 # 5-10% warmup is recommended
   min_lr_ratio: 0.05 # cosine floor; keep > 0 to avoid stalling
   scheduler: cosine
+  two_phase:
+    phase1_steps: 6000
+    phase2_target_views: 2
+    phase2_target_weight_start: 0.3
+    phase2_target_weight_end: 0.8
+    phase2_curriculum_start: 0.35
+    warmup_scale_reg_multiplier: 2.5
+    early_phase2_scale_reg_multiplier: 1.5
+    phase2_scale_reg_relax_progress: 0.5
+    phase2_backbone_lr_mult: 0.1
 
   # Loss weights
   weight_l1: 1.0

@@ -112,6 +112,7 @@ def main():
     )
 
     max_epochs = int(cfg["train"]["epochs"]) if "train" in cfg else 1
+    max_steps = int(cfg.get("train", {}).get("max_steps", -1))
 
     wandb_logger = WandbLogger(
         project="avatar-training",
@@ -153,6 +154,7 @@ def main():
 
     trainer = L.Trainer(
         max_epochs=max_epochs,
+        max_steps=max_steps if max_steps > 0 else -1,
         devices=1,
         accelerator=cfg.get("train", {}).get("accelerator", "cpu"),
         precision=precision if precision else None,

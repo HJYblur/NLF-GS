@@ -2,6 +2,7 @@ from typing import Any, Dict, Optional
 from contextlib import nullcontext
 from pathlib import Path
 import math
+import random
 import re
 import torch
 from torch.utils.data import DataLoader
@@ -41,13 +42,41 @@ class NlfGaussianModel(L.LightningModule):
         self.renderer = renderer
         self.loss_fn = LossFunctions()    
         self.train_decoder_only = train_decoder_only
+        train_cfg = get_config().get("train", {})
 
-        # Keep backbone frozen only in decoder-only mode.
+        two_phase_cfg = train_cfg.get("two_phase", {})
+        self.total_steps_cap = int(train_cfg.get("max_steps", 25000))
+        self.phase1_steps = int(two_phase_cfg.get("phase1_steps", 6000))
+        self.phase1_steps = max(0, min(self.phase1_steps, self.total_steps_cap))
+        self.phase2_target_views = int(two_phase_cfg.get("phase2_target_views", 2))
+        self.phase2_target_views = max(1, self.phase2_target_views)
+        self.phase2_target_weight_start = float(
+            two_phase_cfg.get("phase2_target_weight_start", 0.3)
+        )
+        self.phase2_target_weight_end = float(
+            two_phase_cfg.get("phase2_target_weight_end", 0.8)
+        )
+        self.phase2_curriculum_start = float(
+            two_phase_cfg.get("phase2_curriculum_start", 0.35)
+        )
+        self.warmup_scale_reg_mult = float(
+            two_phase_cfg.get("warmup_scale_reg_multiplier", 2.5)
+        )
+        self.early_phase2_scale_reg_mult = float(
+            two_phase_cfg.get("early_phase2_scale_reg_multiplier", 1.5)
+        )
+        self.phase2_scale_reg_relax_progress = float(
+            two_phase_cfg.get("phase2_scale_reg_relax_progress", 0.5)
+        )
+        self.backbone_lr_phase2_mult = float(
+            two_phase_cfg.get("phase2_backbone_lr_mult", 0.1)
+        )
+
+        # Keep backbone frozen during warm-up and decoder-only mode.
         if hasattr(self.backbone, "set_resnet_fpn_frozen"):
-            self.backbone.set_resnet_fpn_frozen(self.train_decoder_only)
+            self.backbone.set_resnet_fpn_frozen(self.train_decoder_only or self.phase1_steps > 0)
 
         # Read optimizer & scheduler settings from config and save as hyperparameters
-        train_cfg = get_config().get("train", {})
         lr = float(train_cfg.get("lr", 1e-4))
         wd = float(train_cfg.get("wd", train_cfg.get("weight_decay", 0.01)))
         betas = train_cfg.get("betas", [0.9, 0.99])
@@ -90,6 +119,7 @@ class NlfGaussianModel(L.LightningModule):
         self._tracked_loss_names = train_cfg.get("tracked_losses", None)
         raw_test_renders = train_cfg.get("test_renders", [7, 100, 350])
         self._test_renders = {int(subject_id) for subject_id in raw_test_renders}
+        self._phase2_backbone_activated = False
 
     def training_step(self, batch: Dict[str, Any], batch_idx: int):
         loss_dict = self.shared_step(batch=batch, batch_idx=batch_idx, stage="train")
@@ -101,29 +131,89 @@ class NlfGaussianModel(L.LightningModule):
         self._log_loss_dict(val_loss_dict, stage="val")
         return val_loss_dict["loss"]
 
+    def _in_phase2(self) -> bool:
+        return int(self.global_step) >= int(self.phase1_steps)
+
+    def _phase2_progress(self) -> float:
+        if not self._in_phase2():
+            return 0.0
+        denom = max(1, int(self.total_steps_cap) - int(self.phase1_steps))
+        return min(1.0, max(0.0, (int(self.global_step) - int(self.phase1_steps)) / denom))
+
+    def _current_target_weight(self) -> float:
+        p = self._phase2_progress()
+        return self.phase2_target_weight_start + (
+            self.phase2_target_weight_end - self.phase2_target_weight_start
+        ) * p
+
+    def _current_scale_reg_weight(self) -> float:
+        base = float(self.loss_fn.weight_scale_reg)
+        if not self._in_phase2():
+            return base * self.warmup_scale_reg_mult
+        relax_gate = min(1.0, self._phase2_progress() / max(1e-6, self.phase2_scale_reg_relax_progress))
+        scale_mult = self.early_phase2_scale_reg_mult + (1.0 - self.early_phase2_scale_reg_mult) * relax_gate
+        return base * scale_mult
+
+    def _select_source_and_targets(self, view_names, stage: str):
+        if view_names is None:
+            return 0, []
+        n_views = len(view_names)
+        if n_views == 0:
+            return 0, []
+        source_idx = 0 if stage != "train" else random.randrange(n_views)
+        candidates = [i for i in range(n_views) if i != source_idx]
+        if not candidates:
+            return source_idx, []
+
+        if self._in_phase2():
+            progress = self._phase2_progress()
+            source_name = view_names[source_idx]
+            index_map = {name: idx for idx, name in enumerate(["front", "left", "back", "right"])}
+            src_ring = index_map.get(str(source_name).lower(), None)
+            if src_ring is not None:
+                def ring_dist(idx):
+                    tgt_ring = index_map.get(str(view_names[idx]).lower(), src_ring)
+                    d = abs(tgt_ring - src_ring)
+                    return min(d, 4 - d)
+
+                near = [i for i in candidates if ring_dist(i) <= 1]
+                far = [i for i in candidates if ring_dist(i) > 1]
+                if progress < self.phase2_curriculum_start and near:
+                    pool = near
+                elif far:
+                    near_quota = max(0, self.phase2_target_views - 1)
+                    if stage == "train":
+                        random.shuffle(near)
+                        random.shuffle(far)
+                    pool = near[:near_quota] + far
+                else:
+                    pool = candidates
+            else:
+                pool = candidates
+            if stage == "train":
+                random.shuffle(pool)
+            targets = pool[: min(self.phase2_target_views, len(pool))]
+            return source_idx, targets
+
+        return source_idx, []
+
     def shared_step(self, batch: Dict[str, Any], batch_idx: int, stage: str) -> torch.Tensor:
         # Extract data from batch
         img_float, img_uint8, masks_float, (B, H, W), subject, view_names, vertices3d, vertices2d = self.process_input(batch)
+        source_idx, target_indices = self._select_source_and_targets(
+            view_names=view_names, stage=stage
+        )
+        supervise_indices = [source_idx]
+        if self._in_phase2():
+            supervise_indices.extend(target_indices)
+
+        gt_images = img_float
 
         grad_ctx = torch.inference_mode() if self.train_decoder_only else nullcontext()
         with grad_ctx:
-            # Process backbone one view at a time to avoid holding B full-res
-            # feature maps on GPU simultaneously (saves ~(B-1)/B of backbone VRAM).
-            feat_list = []
-            for v_idx in range(B):
-                f_v = self.backbone.extract_feature_map(
-                    image=img_float[v_idx : v_idx + 1], use_half=True
-                )
-                feat_list.append(f_v)
-            if isinstance(feat_list[0], dict):
-                feats = {
-                    level: torch.cat([fv[level] for fv in feat_list], dim=0)
-                    for level in feat_list[0].keys()
-                }
-            else:
-                feats = torch.cat(feat_list, dim=0)  # (B, C, Hf, Wf)
-            del feat_list
-            gt_images = img_float
+            feats = self.backbone.extract_feature_map(
+                image=img_float[source_idx : source_idx + 1], use_half=True
+            )
             del img_float
 
         # Keep raw backbone feature magnitudes.
@@ -139,7 +229,7 @@ class NlfGaussianModel(L.LightningModule):
         gaussian_3d: Gaussian 3D Coordinates (B, N, 3)
         """
         B_feats = feat_for_id.shape[0]
-        assert B == B_feats, "Batch size mismatch between image and features"
+        assert B_feats == 1, "Single-view training expects one source feature map."
 
         with grad_ctx:
             if self.use_identity_encoder:
@@ -147,33 +237,16 @@ class NlfGaussianModel(L.LightningModule):
             else:
                 z_id = None
 
+            vertices2d_source = vertices2d[source_idx : source_idx + 1]
             local_feats, view_weights, gaussian_3d, centers2d = (
                 self.avatar_estimator.feature_sample_with_visibility(
-                    feats, vertices3d, vertices2d, img_shape=(H, W)
+                    feats, vertices3d, vertices2d_source, img_shape=(H, W)
                 )
-            )  # (B, N, C_local), (B, N), (B, N, 3), (B, N, 2)
+            )  # (1, N, C_local), (1, N), (1, N, 3), (1, N, 2)
             local_frames = self.avatar_estimator.compute_gaussian_local_frames(
-                vertices3d, device=gaussian_3d.device, batch_size=B
-            )  # (B, N, 3, 3)
-            if local_frames.shape[0] == 1 and B > 1:
-                local_frames = local_frames.expand(B, -1, -1, -1)
+                vertices3d, device=gaussian_3d.device, batch_size=1
+            )  # (1, N, 3, 3)
         local_feats_prefusion = local_feats
-        # Use all views for supervision; `data.num_views` only controls
-        # whether decoder input is per-view (1) or fused (4).
-        if self.num_views == 4:
-            weights = view_weights.clamp_min(0.0)
-            weights_sum = weights.sum(dim=0, keepdim=True).clamp_min(1e-8)
-            weights = weights / weights_sum
-            local_feats = (local_feats * weights.unsqueeze(-1)).sum(dim=0, keepdim=True)
-            gaussian_3d_decode = gaussian_3d[0:1]
-            local_frames_decode = local_frames[0:1]
-            z_id_decode = None if z_id is None else z_id.mean(dim=0, keepdim=True)
-        else:
-            gaussian_3d_decode = gaussian_3d
-            local_frames_decode = local_frames
-            z_id_decode = z_id
-
-
         feat_size = feat_for_id.shape[-2:]  # (Hf, Wf)
         self._maybe_dump_local_feats(
             subject,
@@ -196,92 +269,81 @@ class NlfGaussianModel(L.LightningModule):
         del feat_for_id
         del img_uint8
 
-        assert gaussian_3d.shape[0] == B, "Mismatch between gaussian_3d and number of views"
+        local_feats_source = local_feats
+        z_id_source = None
+        if z_id is not None:
+            z_id_source = z_id
 
+        gaussian_params = self.decoder(local_feats_source, z_id_source)
+        gaussian_3d_shared = gaussian_3d[0]
+        frame_idx = 0
+        offset_local = gaussian_params.get("offset", None)
+        if offset_local is not None:
+            gaussian_3d_shared = gaussian_3d_shared + torch.einsum(
+                "nij,nj->ni", local_frames[frame_idx], offset_local
+            )
+
+        weight_overrides = {"weight_scale_reg": self._current_scale_reg_weight()}
         per_view_losses = []
+        per_view_psnr = []
+        for view_idx in supervise_indices:
+            view_name = view_names[view_idx]
+            rendered_imgs = self.renderer.render(
+                gaussian_3d=gaussian_3d_shared,
+                gaussian_params=gaussian_params,
+                view_name=view_name,
+            )
+            self._log_render_output(
+                rendered_imgs=rendered_imgs,
+                subject=subject,
+                view_name=view_name,
+                stage=stage,
+            )
 
-        if self.num_views == 4:
-            gaussian_params_fused = self.decoder(local_feats, z_id_decode)
-            gaussian_3d_fused = gaussian_3d_decode[0]
-            offset_local = gaussian_params_fused.get("offset", None)
-            if offset_local is not None:
-                gaussian_3d_fused = gaussian_3d_fused + torch.einsum(
-                    "nij,nj->ni", local_frames_decode[0], offset_local
+            pred = rendered_imgs.permute(0, 3, 1, 2)
+            gt = gt_images[view_idx : view_idx + 1]
+            mask = None if masks_float is None else masks_float[view_idx : view_idx + 1]
+            mse = torch.mean((pred - gt) ** 2).clamp_min(1e-8)
+            per_view_psnr.append(10.0 * torch.log10(1.0 / mse))
+            per_view_losses.append(
+                self.loss_fn(
+                    pred,
+                    gt,
+                    mask,
+                    gaussian_params=gaussian_params,
+                    gaussian_3d=gaussian_3d_shared.unsqueeze(0),
+                    weight_overrides=weight_overrides,
                 )
+            )
 
-            for view_idx, view_name in enumerate(view_names):
-                rendered_imgs = self.renderer.render(
-                    gaussian_3d=gaussian_3d_fused,
-                    gaussian_params=gaussian_params_fused,
-                    view_name=view_name,
-                )
-                self._log_render_output(
-                    rendered_imgs=rendered_imgs,
-                    subject=subject,
-                    view_name=view_name,
-                    stage=stage,
-                )
-
-                pred = rendered_imgs.permute(0, 3, 1, 2)
-                gt = gt_images[view_idx : view_idx + 1]
-                mask = None if masks_float is None else masks_float[view_idx : view_idx + 1]
-                per_view_losses.append(
-                    self.loss_fn(
-                        pred,
-                        gt,
-                        mask,
-                        gaussian_params=gaussian_params_fused,
-                        gaussian_3d=gaussian_3d_fused.unsqueeze(0),
-                    )
-                )
+        src_loss_dict = per_view_losses[0]
+        if len(per_view_losses) > 1:
+            tgt_loss_dict = {
+                key: torch.stack([ld[key] for ld in per_view_losses[1:]]).mean()
+                for key in per_view_losses[0]
+            }
         else:
-            for view_idx, view_name in enumerate(view_names):
-                local_feats_view = local_feats[view_idx : view_idx + 1]
-                z_id_view = None if z_id_decode is None else z_id_decode
-                if z_id_decode is not None and z_id_decode.shape[0] == B:
-                    z_id_view = z_id_decode[view_idx : view_idx + 1]
+            tgt_loss_dict = {key: torch.zeros_like(val) for key, val in src_loss_dict.items()}
 
-                gaussian_params_view = self.decoder(local_feats_view, z_id_view)
-                gaussian_3d_view = gaussian_3d_decode[view_idx]
-                offset_local = gaussian_params_view.get("offset", None)
-                if offset_local is not None:
-                    frame_idx = view_idx if local_frames_decode.shape[0] > 1 else 0
-                    gaussian_3d_view = gaussian_3d_view + torch.einsum(
-                        "nij,nj->ni", local_frames_decode[frame_idx], offset_local
-                    )
+        w_tgt = self._current_target_weight() if self._in_phase2() else 0.0
+        w_src = 1.0
 
-                rendered_imgs = self.renderer.render(
-                    gaussian_3d=gaussian_3d_view,
-                    gaussian_params=gaussian_params_view,
-                    view_name=view_name,
-                )
-                self._log_render_output(
-                    rendered_imgs=rendered_imgs,
-                    subject=subject,
-                    view_name=view_name,
-                    stage=stage,
-                )
-
-                pred = rendered_imgs.permute(0, 3, 1, 2)
-                gt = gt_images[view_idx : view_idx + 1]
-                mask = None if masks_float is None else masks_float[view_idx : view_idx + 1]
-                per_view_losses.append(
-                    self.loss_fn(
-                        pred,
-                        gt,
-                        mask,
-                        gaussian_params=gaussian_params_view,
-                        gaussian_3d=gaussian_3d_view.unsqueeze(0),
-                    )
-                )
+        loss_dict = {
+            key: (w_src * src_loss_dict[key] + w_tgt * tgt_loss_dict[key]) / max(1.0, w_src + w_tgt)
+            for key in src_loss_dict
+        }
+        loss_dict["src_loss"] = src_loss_dict["loss"]
+        loss_dict["tgt_loss"] = tgt_loss_dict["loss"]
+        loss_dict["src_psnr"] = per_view_psnr[0]
+        if len(per_view_psnr) > 1:
+            loss_dict["tgt_psnr"] = torch.stack(per_view_psnr[1:]).mean()
+        else:
+            loss_dict["tgt_psnr"] = torch.zeros_like(per_view_psnr[0])
+        loss_dict["w_tgt"] = torch.tensor(w_tgt, device=loss_dict["loss"].device)
+        loss_dict["phase"] = torch.tensor(2 if self._in_phase2() else 1, device=loss_dict["loss"].device)
         del local_feats
         del local_frames
         del z_id
-
-        loss_dict = {
-            key: torch.stack([ld[key] for ld in per_view_losses]).mean()
-            for key in per_view_losses[0]
-        }
 
         del gaussian_3d
         return loss_dict
@@ -367,8 +429,6 @@ class NlfGaussianModel(L.LightningModule):
 
         bb_decay, bb_no_decay = [], []
         for n, p in self.backbone.named_parameters():
-            if not p.requires_grad:
-                continue
             (bb_no_decay if is_no_decay(n, p) else bb_decay).append(p)
 
         optimizer = torch.optim.AdamW(
@@ -444,6 +504,28 @@ class NlfGaussianModel(L.LightningModule):
 
         self.log("train/lr_decoder", decoder_lr, prog_bar=True)
         self.log("train/lr_backbone", backbone_lr, prog_bar=False)
+        self.log("train/w_tgt", float(self._current_target_weight()) if self._in_phase2() else 0.0, prog_bar=False)
+
+    def on_train_batch_start(self, batch, batch_idx):
+        if self._phase2_backbone_activated:
+            return
+        if not self._in_phase2():
+            return
+        if hasattr(self.backbone, "set_resnet_fpn_frozen"):
+            self.backbone.set_resnet_fpn_frozen(False)
+        optimizer = self.trainer.optimizers[0]
+        decoder_lr = None
+        for group in optimizer.param_groups:
+            group_name = str(group.get("name", ""))
+            if group_name.startswith("decoder") and decoder_lr is None:
+                decoder_lr = float(group["lr"])
+        if decoder_lr is None:
+            decoder_lr = float(self.hparams.lr)
+        for group in optimizer.param_groups:
+            group_name = str(group.get("name", ""))
+            if group_name.startswith("backbone"):
+                group["lr"] = decoder_lr * self.backbone_lr_phase2_mult
+        self._phase2_backbone_activated = True
 
     def process_input(self, batch):
         """Extract tensors from the dataset batch and normalize shape/device.
