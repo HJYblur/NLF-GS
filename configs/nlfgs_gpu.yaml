@@ -87,7 +87,7 @@ train:
   eps: 1.0e-8
   warmup_ratio: 0.05 # 5-10% warmup is recommended
   min_lr_ratio: 0.05 # cosine floor; keep > 0 to avoid stalling
-  scheduler: cosine
+  scheduler: none
   two_phase:
     phase1_ratio: 0.3 # used when phase1_steps is null
     phase1_steps: null # optional explicit override (e.g. 6000)

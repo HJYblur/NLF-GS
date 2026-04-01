@@ -89,7 +89,7 @@ class NlfGaussianModel(L.LightningModule):
         warmup_ratio = float(train_cfg.get("warmup_ratio", 0.05))
         bb_lr_mult = float(train_cfg.get("bb_lr_mult", 0.1))
         min_lr_ratio = float(train_cfg.get("min_lr_ratio", 0.05))
-        scheduler_name = train_cfg.get("scheduler", "cosine")
+        scheduler_name = train_cfg.get("scheduler", "none")
         # Persist to hparams for use in configure_optimizers
         self.save_hyperparameters({
             "lr": lr,
@@ -377,8 +377,14 @@ class NlfGaussianModel(L.LightningModule):
             loss_dict["tgt_psnr"] = torch.stack(per_view_psnr[1:]).mean()
         else:
             loss_dict["tgt_psnr"] = torch.zeros_like(per_view_psnr[0])
-        loss_dict["w_tgt"] = torch.tensor(w_tgt, device=loss_dict["loss"].device)
-        loss_dict["phase"] = torch.tensor(2 if self._in_phase2() else 1, device=loss_dict["loss"].device)
+        loss_dict["w_tgt"] = torch.tensor(
+            float(w_tgt), device=loss_dict["loss"].device, dtype=torch.float32
+        )
+        loss_dict["phase"] = torch.tensor(
+            float(2 if self._in_phase2() else 1),
+            device=loss_dict["loss"].device,
+            dtype=torch.float32,
+        )
         del local_feats
         del local_frames
         del z_id
@@ -499,6 +505,10 @@ class NlfGaussianModel(L.LightningModule):
             betas=tuple(self.hparams.betas) if isinstance(self.hparams.betas, (list, tuple)) else (0.9, 0.99),
             eps=float(self.hparams.eps),
         )
+
+        scheduler_name = str(getattr(self.hparams, "scheduler", "none")).lower()
+        if scheduler_name == "none":
+            return {"optimizer": optimizer}
 
         total_steps = int(self.trainer.estimated_stepping_batches)
         warmup_ratio = float(self.hparams.warmup_ratio)
@@ -672,7 +682,12 @@ class NlfGaussianModel(L.LightningModule):
         for key, value in loss_dict.items():
             if tracked is not None and key not in tracked:
                 continue
-            self.log(f"{stage}/{key}", value, prog_bar=(stage == "val" and key == "loss"))
+            self.log(
+                f"{stage}/{key}",
+                value,
+                prog_bar=(stage == "val" and key == "loss"),
+                batch_size=1,
+            )
 
     def _log_render_output(
         self,

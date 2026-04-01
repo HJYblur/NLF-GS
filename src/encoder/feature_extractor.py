@@ -21,9 +21,9 @@ class FeatureExtractor(nn.Module):
         if not hasattr(nlf_model, "detector"):
             raise AttributeError("nlf_model must expose detector")
 
-        self.nlf_model = nlf_model
         self.use_resnet_fpn = bool(use_resnet_fpn)
         self.fpn_extractor: Optional[FrozenResNet50FPNExtractor] = None
+        self.nlf_model = None
 
         if self.use_resnet_fpn:
             self.fpn_extractor = FrozenResNet50FPNExtractor(
@@ -32,6 +32,7 @@ class FeatureExtractor(nn.Module):
                 frozen=freeze_resnet_fpn,
             )
         else:
+            self.nlf_model = nlf_model
             if not hasattr(nlf_model, "crop_model") or not hasattr(
                 nlf_model.crop_model, "backbone"
             ):
@@ -56,6 +57,7 @@ class FeatureExtractor(nn.Module):
         if self.use_resnet_fpn:
             assert self.fpn_extractor is not None
             return self.fpn_extractor(image.float())
+        assert self.nlf_model is not None
 
         x = image.half() if use_half else image
         x = self.nlf_model.crop_model.backbone(x)
