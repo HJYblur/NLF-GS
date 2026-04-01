@@ -75,8 +75,7 @@ train:
   precision: 16-mixed # Use AMP (fp16) to halve VRAM on activations & weights
   batch_size: 4 # Must match num_views (4 views fused per subject)
   num_workers: 2
-  epochs: 10
-  max_steps: 25000
+  max_steps: 25000 # total training cap; training is step-based
   val_ratio: 0.2
 
   # Optimizer & scheduler settings
@@ -90,7 +89,8 @@ train:
   min_lr_ratio: 0.05 # cosine floor; keep > 0 to avoid stalling
   scheduler: cosine
   two_phase:
-    phase1_steps: 6000
+    phase1_ratio: 0.3 # used when phase1_steps is null
+    phase1_steps: null # optional explicit override (e.g. 6000)
     phase2_target_views: 2
     phase2_target_weight_start: 0.3
     phase2_target_weight_end: 0.8

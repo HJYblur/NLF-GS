@@ -5,7 +5,6 @@ import math
 import random
 import re
 import torch
-from torch.utils.data import DataLoader
 import lightning as L
 from encoder.feature_extractor import FeatureExtractor
 from encoder.gaussian_estimator import AvatarGaussianEstimator
@@ -18,6 +17,10 @@ from avatar_utils.config import get_config
 
 
 class NlfGaussianModel(L.LightningModule):
+    """Two-stage trainer:
+    1) warm-up with source-view-only supervision
+    2) single-view input + multi-view target supervision.
+    """
     def __init__(
         self,
         backbone_adapter: FeatureExtractor,
@@ -31,9 +34,6 @@ class NlfGaussianModel(L.LightningModule):
         self.use_identity_encoder = bool(
             get_config().get("identity_encoder", {}).get("use_flag", True)
         )
-        self.num_views = int(get_config().get("data", {}).get("num_views", 1))
-        if self.num_views not in (1, 4):
-            raise ValueError(f"data.num_views must be 1 or 4, got {self.num_views}")
         self.template = AvatarTemplate()
         self.backbone = backbone_adapter
         self.avatar_estimator = AvatarGaussianEstimator(self.template)
@@ -46,7 +46,12 @@ class NlfGaussianModel(L.LightningModule):
 
         two_phase_cfg = train_cfg.get("two_phase", {})
         self.total_steps_cap = int(train_cfg.get("max_steps", 25000))
-        self.phase1_steps = int(two_phase_cfg.get("phase1_steps", 6000))
+        phase1_steps_cfg = two_phase_cfg.get("phase1_steps", None)
+        phase1_ratio = float(two_phase_cfg.get("phase1_ratio", 0.3))
+        if phase1_steps_cfg is None:
+            self.phase1_steps = int(self.total_steps_cap * phase1_ratio)
+        else:
+            self.phase1_steps = int(phase1_steps_cfg)
         self.phase1_steps = max(0, min(self.phase1_steps, self.total_steps_cap))
         self.phase2_target_views = int(two_phase_cfg.get("phase2_target_views", 2))
         self.phase2_target_views = max(1, self.phase2_target_views)
@@ -200,6 +205,8 @@ class NlfGaussianModel(L.LightningModule):
     def shared_step(self, batch: Dict[str, Any], batch_idx: int, stage: str) -> torch.Tensor:
         # Extract data from batch
         img_float, img_uint8, masks_float, (B, H, W), subject, view_names, vertices3d, vertices2d = self.process_input(batch)
+        # Single-view input path: pick one source view for feature extraction/decoding.
+        # Multi-view behavior happens only at supervision time (render/loss), not feature fusion.
         source_idx, target_indices = self._select_source_and_targets(
             view_names=view_names, stage=stage
         )

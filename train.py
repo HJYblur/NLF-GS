@@ -111,8 +111,9 @@ def main():
         train_decoder_only=train_decoder_only,
     )
 
-    max_epochs = int(cfg["train"]["epochs"]) if "train" in cfg else 1
     max_steps = int(cfg.get("train", {}).get("max_steps", -1))
+    if max_steps <= 0:
+        raise ValueError("train.max_steps must be > 0 for step-based two-phase training.")
 
     wandb_logger = WandbLogger(
         project="avatar-training",
@@ -153,8 +154,8 @@ def main():
         callbacks.append(GpuMemoryProfilerCallback())
 
     trainer = L.Trainer(
-        max_epochs=max_epochs,
-        max_steps=max_steps if max_steps > 0 else -1,
+        max_epochs=-1,
+        max_steps=max_steps,
         devices=1,
         accelerator=cfg.get("train", {}).get("accelerator", "cpu"),
         precision=precision if precision else None,
