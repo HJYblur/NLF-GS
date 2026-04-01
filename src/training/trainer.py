@@ -137,21 +137,25 @@ class NlfGaussianModel(L.LightningModule):
         return val_loss_dict["loss"]
 
     def _in_phase2(self) -> bool:
+        """Return True once global_step has passed the warm-up boundary."""
         return int(self.global_step) >= int(self.phase1_steps)
 
     def _phase2_progress(self) -> float:
+        """Normalized Phase-2 progress in [0,1] used for ramps/curriculum."""
         if not self._in_phase2():
             return 0.0
         denom = max(1, int(self.total_steps_cap) - int(self.phase1_steps))
         return min(1.0, max(0.0, (int(self.global_step) - int(self.phase1_steps)) / denom))
 
     def _current_target_weight(self) -> float:
+        """Linear ramp for target-view supervision weight during phase 2."""
         p = self._phase2_progress()
         return self.phase2_target_weight_start + (
             self.phase2_target_weight_end - self.phase2_target_weight_start
         ) * p
 
     def _current_scale_reg_weight(self) -> float:
+        """Use stronger scale regularization early, then relax towards base value."""
         base = float(self.loss_fn.weight_scale_reg)
         if not self._in_phase2():
             return base * self.warmup_scale_reg_mult
@@ -160,6 +164,15 @@ class NlfGaussianModel(L.LightningModule):
         return base * scale_mult
 
     def _select_source_and_targets(self, view_names, stage: str):
+        """Sample one source view and optional target views.
+
+        Phase 1:
+            - source only (no targets)
+        Phase 2:
+            - choose up to K targets with curriculum
+            - early phase prefers nearby ring-adjacent views
+            - later phase includes larger viewpoint gaps
+        """
         if view_names is None:
             return 0, []
         n_views = len(view_names)
@@ -203,6 +216,20 @@ class NlfGaussianModel(L.LightningModule):
         return source_idx, []
 
     def shared_step(self, batch: Dict[str, Any], batch_idx: int, stage: str) -> torch.Tensor:
+        """Core forward/loss pass shared by train/val.
+
+        Detailed flow:
+          1) Parse full multi-view sample (images/masks/cameras/vertices).
+          2) Select one source view for *input*.
+          3) Extract source-view features only (single-view input policy).
+          4) Sample local Gaussian features and decode one shared 3D representation.
+          5) Render the shared representation to:
+             - source view (always)
+             - selected target views (phase 2 only)
+          6) Compute per-view losses and aggregate:
+             total = (src + w_tgt * tgt_mean) / (1 + w_tgt)
+          7) Log source/target diagnostics (loss, PSNR, phase, w_tgt).
+        """
         # Extract data from batch
         img_float, img_uint8, masks_float, (B, H, W), subject, view_names, vertices3d, vertices2d = self.process_input(batch)
         # Single-view input path: pick one source view for feature extraction/decoding.
@@ -218,6 +245,8 @@ class NlfGaussianModel(L.LightningModule):
 
         grad_ctx = torch.inference_mode() if self.train_decoder_only else nullcontext()
         with grad_ctx:
+            # NOTE: We intentionally run the backbone on source-view only.
+            # Multi-view constraints are applied in the rendering/loss stage below.
             feats = self.backbone.extract_feature_map(
                 image=img_float[source_idx : source_idx + 1], use_half=True
             )
@@ -294,6 +323,7 @@ class NlfGaussianModel(L.LightningModule):
         per_view_losses = []
         per_view_psnr = []
         for view_idx in supervise_indices:
+            # Render same shared 3D prediction to each supervised camera.
             view_name = view_names[view_idx]
             rendered_imgs = self.renderer.render(
                 gaussian_3d=gaussian_3d_shared,
@@ -335,6 +365,7 @@ class NlfGaussianModel(L.LightningModule):
         w_tgt = self._current_target_weight() if self._in_phase2() else 0.0
         w_src = 1.0
 
+        # Weighted mix of source and target losses.
         loss_dict = {
             key: (w_src * src_loss_dict[key] + w_tgt * tgt_loss_dict[key]) / max(1.0, w_src + w_tgt)
             for key in src_loss_dict
