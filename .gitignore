@@ -209,8 +209,7 @@ __marimo__/
 # Project specific
 # Ignore data files
 data/*
-processed/*
-processed_test/*
+processed**
 
 # Ignore output files
 logs/*
