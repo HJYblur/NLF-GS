@@ -172,12 +172,18 @@ class AvatarGaussianEstimator(nn.Module):
 
         if view_names is not None:
             viewmats, _ = load_camera_mapping(view_names)
-            viewmats = viewmats.to(device=device, dtype=centers3d.dtype)
-            c2w = torch.linalg.inv(viewmats)
-            cam_centers = c2w[:, :3, 3]
+            # load_camera_mapping returns world-to-camera matrices by default.
+            # Camera center in world space is C = -R^T t, which avoids matrix
+            # inversion on low-precision dtypes (e.g. fp16 during mixed precision).
+            viewmats = viewmats.to(device=device, dtype=torch.float32)
+            R = viewmats[:, :3, :3]
+            t = viewmats[:, :3, 3]
+            cam_centers = -(R.transpose(1, 2) @ t.unsqueeze(-1)).squeeze(-1)
+            cam_centers = cam_centers.to(dtype=centers3d.dtype)
             view_dir = cam_centers[:, None, :] - centers3d
         else:
             view_dir = -centers3d
+            
         view_dir = view_dir / (torch.norm(view_dir, dim=-1, keepdim=True) + 1e-8)
         normal_alignment = torch.sum(normals * view_dir, dim=-1)
         # Temperature sigmoid weighting (smoother than hard clamp):
