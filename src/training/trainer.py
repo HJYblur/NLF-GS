@@ -3,9 +3,11 @@ from contextlib import nullcontext
 from pathlib import Path
 import math
 import re
+import numpy as np
 import torch
 from torch.utils.data import DataLoader
 import lightning as L
+from PIL import Image
 from encoder.feature_extractor import FeatureExtractor
 from encoder.gaussian_estimator import AvatarGaussianEstimator
 from encoder.identity_encoder import IdentityEncoder
@@ -90,6 +92,9 @@ class NlfGaussianModel(L.LightningModule):
         self._tracked_loss_names = train_cfg.get("tracked_losses", None)
         raw_test_renders = train_cfg.get("test_renders", [7, 100, 350])
         self._test_renders = {int(subject_id) for subject_id in raw_test_renders}
+        debug_cfg = get_config().get("debug", {})
+        self._dump_view_weight_images = bool(debug_cfg.get("dump_view_weight_images", False))
+        self._view_weight_debug_dir = Path(str(debug_cfg.get("view_weight_dir", "debug")))
 
     def training_step(self, batch: Dict[str, Any], batch_idx: int):
         loss_dict = self.shared_step(batch=batch, batch_idx=batch_idx, stage="train")
@@ -149,7 +154,11 @@ class NlfGaussianModel(L.LightningModule):
 
             local_feats, view_weights, gaussian_3d, centers2d = (
                 self.avatar_estimator.feature_sample_with_visibility(
-                    feats, vertices3d, vertices2d, img_shape=(H, W)
+                    feats,
+                    vertices3d,
+                    vertices2d,
+                    img_shape=(H, W),
+                    view_names=view_names,
                 )
             )  # (B, N, C_local), (B, N), (B, N, 3), (B, N, 2)
             local_frames = self.avatar_estimator.compute_gaussian_local_frames(
@@ -183,6 +192,13 @@ class NlfGaussianModel(L.LightningModule):
             feat_size,
             local_feats_prefusion,
             view_weights,
+        )
+        self._maybe_dump_view_weight_images(
+            subject=subject,
+            view_names=view_names,
+            stage=stage,
+            batch_idx=batch_idx,
+            img_size=(H, W),
         )
 
         if not self._shape_debug_logged:
@@ -539,7 +555,70 @@ class NlfGaussianModel(L.LightningModule):
         return img_float, img_uint8, masks_float, (B, H, W), subject, view_names, vertices3d, vertices2d
 
     def _is_test_render_batch(self, subject: str) -> bool:
-        return int(subject) in self._test_renders
+        try:
+            return int(subject) in self._test_renders
+        except (TypeError, ValueError):
+            return False
+
+    @staticmethod
+    def _sparse_values_to_image(values: torch.Tensor, centers2d: torch.Tensor, img_h: int, img_w: int) -> np.ndarray:
+        vals = values.detach().float()
+        ctr = centers2d.detach().float()
+        x = torch.round(ctr[:, 0]).long().clamp(0, img_w - 1)
+        y = torch.round(ctr[:, 1]).long().clamp(0, img_h - 1)
+        idx = y * img_w + x
+        flat = torch.zeros(img_h * img_w, dtype=vals.dtype, device=vals.device)
+        if hasattr(torch.Tensor, "scatter_reduce_"):
+            flat.scatter_reduce_(0, idx, vals, reduce="amax", include_self=True)
+        else:
+            for i in range(idx.numel()):
+                flat[idx[i]] = torch.maximum(flat[idx[i]], vals[i])
+        image = flat.view(img_h, img_w)
+        vmax = image.max()
+        if torch.isfinite(vmax) and float(vmax) > 0.0:
+            image = image / vmax
+        image_u8 = (image.clamp(0.0, 1.0) * 255.0).to(torch.uint8).cpu().numpy()
+        return image_u8
+
+    def _maybe_dump_view_weight_images(
+        self,
+        subject: str,
+        view_names,
+        stage: str,
+        batch_idx: int,
+        img_size: tuple[int, int],
+    ) -> None:
+        if not self._dump_view_weight_images:
+            return
+        if not self._is_test_render_batch(subject):
+            return
+        debug_data = getattr(self.avatar_estimator, "last_weight_debug", None)
+        if not debug_data:
+            return
+        angle_weight = debug_data.get("angle_weight", None)
+        visibility = debug_data.get("visibility", None)
+        centers2d = debug_data.get("centers2d", None)
+        if angle_weight is None or visibility is None or centers2d is None:
+            return
+
+        img_h, img_w = int(img_size[0]), int(img_size[1])
+        view_names_list = view_names if isinstance(view_names, (list, tuple)) else []
+        out_dir = self._view_weight_debug_dir / str(subject) / stage
+        out_dir.mkdir(parents=True, exist_ok=True)
+
+        num_views = min(angle_weight.shape[0], centers2d.shape[0])
+        for view_idx in range(num_views):
+            view_name = str(view_names_list[view_idx]) if view_idx < len(view_names_list) else f"view{view_idx}"
+            angle_img = self._sparse_values_to_image(
+                angle_weight[view_idx], centers2d[view_idx], img_h=img_h, img_w=img_w
+            )
+            vis_img = self._sparse_values_to_image(
+                visibility[view_idx], centers2d[view_idx], img_h=img_h, img_w=img_w
+            )
+            angle_path = out_dir / f"step{self.global_step:07d}_batch{batch_idx:05d}_{view_name}_angle.png"
+            vis_path = out_dir / f"step{self.global_step:07d}_batch{batch_idx:05d}_{view_name}_visibility.png"
+            Image.fromarray(angle_img, mode="L").save(angle_path)
+            Image.fromarray(vis_img, mode="L").save(vis_path)
 
     def _log_loss_dict(self, loss_dict: Dict[str, torch.Tensor], stage: str) -> None:
         should_log = (stage == "train" and self._log_train_losses) or (

@@ -22,6 +22,11 @@ camera:
     left: [-1.0, 0.0, 0.0]
     right: [1.0, 0.0, 0.0]
 
+nlf:
+  checkpoint_path: models/nlf_checkpoint/nlf_l_multi.torchscript
+  use_half: True
+  latent_dim: 512
+
 backbone:
   use_resnet_fpn: true
   fpn_levels: ["p2", "p3", "p4"]
@@ -70,8 +75,8 @@ train:
   precision: 16-mixed # Use AMP (fp16) to halve VRAM on activations & weights
   batch_size: 4 # Must match num_views (4 views fused per subject)
   num_workers: 2
-  epochs: 50
-  val_ratio: 0.1
+  epochs: 1
+  val_ratio: 0.2
 
   # Optimizer & scheduler settings
   lr: 0.0001
@@ -100,7 +105,7 @@ train:
   log_train_losses: true
   log_val_losses: true
   tracked_losses: null # null logs all losses; set list like ["loss", "l1"] to filter
-  test_renders: [7, 10, 12, 15, 100, 350] # subject IDs whose renders are logged online
+  test_renders: [7, 100, 350] # subject IDs whose renders are logged online
 
 analysis:
   dump_local_feats: false # set true to save local_feats and collision_data tensors
@@ -113,3 +118,8 @@ render:
   view_chunk_size: 1
   log_online: true
   log_stages: ["train", "val"]
+
+
+debug:
+  dump_view_weight_images: true
+  view_weight_dir: debug
