@@ -4,6 +4,7 @@ import torch.nn.functional as F
 from collections import OrderedDict
 
 from encoder.avatar_template import AvatarTemplate
+from avatar_utils.camera import load_camera_mapping
 
 
 class AvatarGaussianEstimator(nn.Module):
@@ -163,12 +164,20 @@ class AvatarGaussianEstimator(nn.Module):
         centers2d: torch.Tensor,
         centers3d: torch.Tensor,
         img_shape: tuple,
+        view_names=None,
         depth_eps: float = 1e-3,
     ):
         device = feature_map.device
         normals = self.compute_gaussian_normals(vertices3d, device=device)
 
-        view_dir = -centers3d
+        if view_names is not None:
+            viewmats, _ = load_camera_mapping(view_names)
+            viewmats = viewmats.to(device=device, dtype=centers3d.dtype)
+            c2w = torch.linalg.inv(viewmats)
+            cam_centers = c2w[:, :3, 3]
+            view_dir = cam_centers[:, None, :] - centers3d
+        else:
+            view_dir = -centers3d
         view_dir = view_dir / (torch.norm(view_dir, dim=-1, keepdim=True) + 1e-8)
         normal_alignment = torch.sum(normals * view_dir, dim=-1)
         # Temperature sigmoid weighting (smoother than hard clamp):
@@ -240,6 +249,7 @@ class AvatarGaussianEstimator(nn.Module):
         vertices3d,
         vertices2d,
         img_shape: tuple = None,
+        view_names=None,
         depth_eps: float = 1e-3,
     ):
         fmap_for_coords = next(iter(feature_map.values())) if isinstance(feature_map, dict) else feature_map
@@ -261,6 +271,7 @@ class AvatarGaussianEstimator(nn.Module):
             centers2d=centers2d,
             centers3d=centers3d,
             img_shape=img_shape,
+            view_names=view_names,
             depth_eps=depth_eps,
         )
         return local_feats, view_weights, centers3d, centers2d
