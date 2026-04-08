@@ -54,44 +54,19 @@ def main():
     dm = AvatarDataModule(cfg)
     dm.setup("fit")
 
-    # Import nlf model
-    # Load TorchScript model; force it to the chosen device
-    nlf_checkpoint = torch.jit.load(
-        cfg["nlf"]["checkpoint_path"], map_location=device
-    ).eval()
-    try:
-        nlf_checkpoint.to(device)
-    except Exception:
-        # Some TorchScript modules may not implement .to(); that's okay
-        raise RuntimeError("NLF model does not support .to() method.")
-
-    # Small sanity-check about model param device/dtype (works with ScriptModule state_dict)
-    try:
-        sd = nlf_checkpoint.state_dict()
-        first_tensor = next(iter(sd.values()))
-        _ = (first_tensor.device, first_tensor.dtype)
-    except Exception:
-        pass
-
     # Backbone Adapter Initialization
     backbone_cfg = cfg.get("backbone", {})
     train_cfg = cfg.get("train", {})
     train_decoder_only = bool(train_cfg.get("train_decoder_only", True))
-    use_resnet_fpn = bool(backbone_cfg.get("use_resnet_fpn", True))
     fpn_levels = tuple(backbone_cfg.get("fpn_levels", ["p2", "p3", "p4"]))
     backbone = FeatureExtractor(
-        nlf_checkpoint,
-        use_resnet_fpn=use_resnet_fpn,
         fpn_levels=fpn_levels,
         resnet_weights_path=backbone_cfg.get("resnet50_weights_path"),
         freeze_resnet_fpn=train_decoder_only,
     )
 
-    if use_resnet_fpn:
-        fpn_out_channels = int(backbone_cfg.get("fpn_out_channels", 256))
-        c_local = fpn_out_channels * len(fpn_levels)
-    else:
-        c_local = int(cfg["nlf"].get("latent_dim", 512))
+    fpn_out_channels = int(backbone_cfg.get("fpn_out_channels", 256))
+    c_local = fpn_out_channels * len(fpn_levels)
 
     # Identity Encoder Initialization
     id_latent_dim = int(cfg["identity_encoder"].get("latent_dim", 64))

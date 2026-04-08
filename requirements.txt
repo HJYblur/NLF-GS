@@ -1,4 +1,4 @@
-## Minimal requirements for avatar-benchmark (excluding `nlf/` subpackage)
+## Minimal requirements for avatar-benchmark
 numpy>=1.21.0
 opencv-python>=4.5.0
 
@@ -21,10 +21,4 @@ plyfile>=0.7.2
 pyrender>=0.1.45
 
 # Notes:
-# - The `nlf/` subpackage (SMPL/SMPLX fitting, rendering, and demo code)
-#   depends on additional packages (smplx, chumpy, pyrender, florch,
-#   simplepyutils, matplotlib, imageio, pandas, etc.) which are intentionally
-#   omitted here per your request. 
-#   If you later need the nlf demos, install
-#   them using `nlf/environment_comfortable_py10.yml` or
-#   `nlf/install_dependencies.sh`.
+# - Install project-specific optional dependencies as needed for your workflows.

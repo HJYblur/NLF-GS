@@ -22,11 +22,6 @@ camera:
     left: [-1.0, 0.0, 0.0]
     right: [1.0, 0.0, 0.0]
 
-nlf:
-  checkpoint_path: models/nlf_checkpoint/nlf_l_multi.torchscript
-  use_half: True
-  latent_dim: 512
-
 backbone:
   use_resnet_fpn: true
   fpn_levels: ["p2", "p3", "p4"]
