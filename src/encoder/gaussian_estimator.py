@@ -15,6 +15,7 @@ class AvatarGaussianEstimator(nn.Module):
         super().__init__()
         self._avatar = template
         self.last_sampled_level_shapes = None
+        self.last_weight_debug = None
 
     @property
     def template(self) -> AvatarTemplate:
@@ -185,8 +186,15 @@ class AvatarGaussianEstimator(nn.Module):
         visible = center_depth <= (depth_samples + depth_eps)
         visible = visible | torch.isinf(depth_samples)
         visibility = visible.to(dtype=feature_map.dtype)
+        view_weights = angle_weight * visibility
+        self.last_weight_debug = {
+            "angle_weight": angle_weight.detach(),
+            "visibility": visibility.detach(),
+            "view_weights": view_weights.detach(),
+            "centers2d": centers2d.detach(),
+        }
 
-        return angle_weight * visibility
+        return view_weights
 
     def feature_sample(self, feature_map, vertices2d, img_shape: tuple = None, centers2d: torch.Tensor = None):
         if centers2d is None:
