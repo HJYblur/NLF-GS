@@ -154,7 +154,11 @@ class NlfGaussianModel(L.LightningModule):
 
             local_feats, view_weights, gaussian_3d, centers2d = (
                 self.avatar_estimator.feature_sample_with_visibility(
-                    feats, vertices3d, vertices2d, img_shape=(H, W)
+                    feats,
+                    vertices3d,
+                    vertices2d,
+                    img_shape=(H, W),
+                    view_names=view_names,
                 )
             )  # (B, N, C_local), (B, N), (B, N, 3), (B, N, 2)
             local_frames = self.avatar_estimator.compute_gaussian_local_frames(
