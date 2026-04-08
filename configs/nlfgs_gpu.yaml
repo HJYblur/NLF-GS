@@ -7,7 +7,7 @@ data:
   raw: data
   root: processed
   smplx_root: data/THuman_2.0_smplx_paras
-  num_views: 1
+  num_views: 4
   template_path: models/avatar_template.ply
   image_size: [512, 512] # [W, H]
 
@@ -75,8 +75,8 @@ train:
   precision: 16-mixed # Use AMP (fp16) to halve VRAM on activations & weights
   batch_size: 4 # Must match num_views (4 views fused per subject)
   num_workers: 2
-  epochs: 10
-  val_ratio: 0.2
+  epochs: 50
+  val_ratio: 0.1
 
   # Optimizer & scheduler settings
   lr: 0.0001
@@ -105,7 +105,7 @@ train:
   log_train_losses: true
   log_val_losses: true
   tracked_losses: null # null logs all losses; set list like ["loss", "l1"] to filter
-  test_renders: [7, 100, 350] # subject IDs whose renders are logged online
+  test_renders: [7, 10, 12, 15, 100, 350] # subject IDs whose renders are logged online
 
 analysis:
   dump_local_feats: false # set true to save local_feats and collision_data tensors
