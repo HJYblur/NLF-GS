@@ -170,7 +170,12 @@ class AvatarGaussianEstimator(nn.Module):
 
         view_dir = -centers3d
         view_dir = view_dir / (torch.norm(view_dir, dim=-1, keepdim=True) + 1e-8)
-        angle_weight = torch.sum(normals * view_dir, dim=-1).clamp_min(0.0)
+        normal_alignment = torch.sum(normals * view_dir, dim=-1)
+        # Temperature sigmoid weighting (smoother than hard clamp):
+        #   weight = sigmoid((dot(normal, view_dir) - tau) / temperature)
+        tau = 0.0
+        temperature = 0.2
+        angle_weight = torch.sigmoid((normal_alignment - tau) / max(temperature, 1e-6))
 
         depth_map = self.build_depth_map(vertices3d, vertices2d, img_shape=img_shape, device=device)
         H_img, W_img = int(img_shape[0]), int(img_shape[1])
