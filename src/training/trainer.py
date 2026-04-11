@@ -35,6 +35,8 @@ class NlfGaussianModel(L.LightningModule):
         self.num_views = int(get_config().get("data", {}).get("num_views", 1))
         if self.num_views not in (1, 4):
             raise ValueError(f"data.num_views must be 1 or 4, got {self.num_views}")
+        data_cfg = get_config().get("data", {})
+        self._residual_alpha = float(data_cfg.get("residual_alpha", 0.1))
         self.template = AvatarTemplate()
         self.backbone = backbone_adapter
         self.avatar_estimator = AvatarGaussianEstimator(self.template)
@@ -106,6 +108,41 @@ class NlfGaussianModel(L.LightningModule):
         self._log_loss_dict(val_loss_dict, stage="val")
         return val_loss_dict["loss"]
 
+    @staticmethod
+    def _fuse_residual_local_feats(
+        local_feats: torch.Tensor,
+        view_weights: torch.Tensor,
+        ref_idx: int,
+        alpha: float,
+    ) -> torch.Tensor:
+        """Fuse per-Gaussian features into the reference view with a small support residual.
+
+        f_fused = f_ref + alpha * sum_{v != ref} w'_v (f_v - f_ref), with w' normalized over
+        support views only (per Gaussian), using non-negative view_weights.
+        """
+        B, N, C = local_feats.shape
+        f_ref = local_feats[ref_idx]  # (N, C)
+        if B == 1:
+            return f_ref.unsqueeze(0)
+
+        w = view_weights.clamp_min(0.0)
+        w_support = w.clone()
+        w_support[ref_idx] = 0.0
+        w_sum = w_support.sum(dim=0, keepdim=True).clamp_min(1e-8)  # (1, N)
+        w_norm = w_support / w_sum  # (B, N)
+        diff = local_feats - f_ref.unsqueeze(0)  # (B, N, C)
+        residual = (w_norm.unsqueeze(-1) * diff).sum(dim=0)  # (N, C)
+        return (f_ref + alpha * residual).unsqueeze(0)
+
+    @staticmethod
+    def _random_fusion_reference_index(batch_idx: int, B: int, stage: str) -> int:
+        """Uniform random reference on train; deterministic (cyclic in batch order) on val."""
+        if B <= 1:
+            return 0
+        if stage == "train":
+            return int(torch.randint(0, B, (1,)).item())
+        return int(batch_idx % B)
+
     def shared_step(self, batch: Dict[str, Any], batch_idx: int, stage: str) -> torch.Tensor:
         # Extract data from batch
         img_float, img_uint8, masks_float, (B, H, W), subject, view_names, vertices3d, vertices2d = self.process_input(batch)
@@ -170,12 +207,12 @@ class NlfGaussianModel(L.LightningModule):
         # Use all views for supervision; `data.num_views` only controls
         # whether decoder input is per-view (1) or fused (4).
         if self.num_views == 4:
-            weights = view_weights.clamp_min(0.0)
-            weights_sum = weights.sum(dim=0, keepdim=True).clamp_min(1e-8)
-            weights = weights / weights_sum
-            local_feats = (local_feats * weights.unsqueeze(-1)).sum(dim=0, keepdim=True)
-            gaussian_3d_decode = gaussian_3d[0:1]
-            local_frames_decode = local_frames[0:1]
+            fusion_ref_idx = self._random_fusion_reference_index(batch_idx, B, stage)
+            local_feats = self._fuse_residual_local_feats(
+                local_feats, view_weights, fusion_ref_idx, self._residual_alpha
+            )
+            gaussian_3d_decode = gaussian_3d[fusion_ref_idx : fusion_ref_idx + 1]
+            local_frames_decode = local_frames[fusion_ref_idx : fusion_ref_idx + 1]
             z_id_decode = None if z_id is None else z_id.mean(dim=0, keepdim=True)
         else:
             gaussian_3d_decode = gaussian_3d

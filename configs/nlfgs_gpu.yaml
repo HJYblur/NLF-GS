@@ -8,6 +8,8 @@ data:
   root: processed
   smplx_root: data/THuman_2.0_smplx_paras
   num_views: 4
+  # Residual fusion: f_fused = f_ref + residual_alpha * sum_{v!=ref} w'_v (f_v - f_ref); ref view random per batch (train)
+  residual_alpha: 0.1
   template_path: models/avatar_template.ply
   image_size: [512, 512] # [W, H]
 
