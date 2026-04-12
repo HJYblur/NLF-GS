@@ -10,6 +10,7 @@ import lightning as L
 from PIL import Image
 from encoder.feature_extractor import FeatureExtractor
 from encoder.gaussian_estimator import AvatarGaussianEstimator
+from encoder.learned_view_fusion import LearnedViewFusion
 from encoder.identity_encoder import IdentityEncoder
 from encoder.avatar_template import AvatarTemplate
 from decoder.gaussian_decoder import GaussianDecoder
@@ -35,6 +36,18 @@ class NlfGaussianModel(L.LightningModule):
         self.num_views = int(get_config().get("data", {}).get("num_views", 1))
         if self.num_views not in (1, 4):
             raise ValueError(f"data.num_views must be 1 or 4, got {self.num_views}")
+        fusion_cfg = get_config().get("fusion", {})
+        self.fusion_mode = str(fusion_cfg.get("mode", "fixed"))
+        if self.num_views == 4 and self.fusion_mode not in ("fixed", "learned"):
+            raise ValueError(f"fusion.mode must be 'fixed' or 'learned', got {self.fusion_mode!r}")
+        dec_cfg = get_config().get("decoder", {})
+        feat_dim = int(dec_cfg.get("in_dim", get_config().get("model", {}).get("local_feature_dim", 768)))
+        fusion_hidden = int(fusion_cfg.get("hidden_dim", dec_cfg.get("hidden", 256)))
+        self.view_fusion = (
+            LearnedViewFusion(feat_dim=feat_dim, hidden_dim=fusion_hidden)
+            if (self.num_views == 4 and self.fusion_mode == "learned")
+            else None
+        )
         self.template = AvatarTemplate()
         self.backbone = backbone_adapter
         self.avatar_estimator = AvatarGaussianEstimator(self.template)
@@ -170,10 +183,13 @@ class NlfGaussianModel(L.LightningModule):
         # Use all views for supervision; `data.num_views` only controls
         # whether decoder input is per-view (1) or fused (4).
         if self.num_views == 4:
-            weights = view_weights.clamp_min(0.0)
-            weights_sum = weights.sum(dim=0, keepdim=True).clamp_min(1e-8)
-            weights = weights / weights_sum
-            local_feats = (local_feats * weights.unsqueeze(-1)).sum(dim=0, keepdim=True)
+            if self.view_fusion is not None:
+                local_feats = self.view_fusion(local_feats, view_weights)
+            else:
+                weights = view_weights.clamp_min(0.0)
+                weights_sum = weights.sum(dim=0, keepdim=True).clamp_min(1e-8)
+                weights = weights / weights_sum
+                local_feats = (local_feats * weights.unsqueeze(-1)).sum(dim=0, keepdim=True)
             gaussian_3d_decode = gaussian_3d[0:1]
             local_frames_decode = local_frames[0:1]
             z_id_decode = None if z_id is None else z_id.mean(dim=0, keepdim=True)
@@ -376,10 +392,13 @@ class NlfGaussianModel(L.LightningModule):
             return False
 
         dec_decay, dec_no_decay = [], []
-        for n, p in self.decoder.named_parameters():
-            if not p.requires_grad:
+        for mod in (self.decoder, self.view_fusion):
+            if mod is None:
                 continue
-            (dec_no_decay if is_no_decay(n, p) else dec_decay).append(p)
+            for n, p in mod.named_parameters():
+                if not p.requires_grad:
+                    continue
+                (dec_no_decay if is_no_decay(n, p) else dec_decay).append(p)
 
         bb_decay, bb_no_decay = [], []
         for n, p in self.backbone.named_parameters():
