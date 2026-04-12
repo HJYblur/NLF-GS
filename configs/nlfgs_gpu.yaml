@@ -48,6 +48,10 @@ avatar:
       - [0.2, 0.2, 0.6]
       - [0.3333333333, 0.3333333333, 0.3333333333]
 
+fusion:
+  mode: learned # fixed: normalize geometric view_weights only; learned: MLP + softmax over views
+  hidden_dim: 256 # MLP width (defaults to decoder.hidden if omitted)
+
 decoder:
   in_dim: 768 # local feature dim
   hidden: 256
