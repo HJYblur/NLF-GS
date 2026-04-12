@@ -54,10 +54,10 @@ fusion:
 decoder:
   in_dim: 768 # local feature dim
   hidden: 256
-  sh_degree: 0
-  out_dim: 14
+  sh_degree: 1
+  out_dim: 23
   scale_min: 1.0e-6 # sigmoid lower bound for Gaussian scale
-  scale_max: 1.0e-3 # sigmoid upper bound for Gaussian scale
+  scale_max: 4.0e-3 # sigmoid upper bound for Gaussian scale
   alpha_min: 0.0 # lower bound for opacity
   alpha_max: 1.0 # upper bound for opacity
   rot_min: -1.0 # pre-normalization lower bound for quaternion components
@@ -88,15 +88,16 @@ train:
   scheduler: cosine
 
   # Loss weights
-  weight_l1: 1.0
-  weight_l2: 0.25
+  weight_l1: 0.5
   weight_masked_ssim: 0.1
   weight_perceptual: 0.05
+  weight_silhouette: 0.10
   weight_scale_reg: 0.005
   weight_offset_reg: 0.01
-  weight_opacity_reg: 0.01
-  weight_silhouette: 0.2 # Silhouette loss: penalizes mismatch between rendered and GT mask
-  weight_multiview_consistency: 0.05
+  weight_opacity_nontransparent: 0.01
+  # Unused in final loss now (commented out in losses.py)
+  weight_opacity_reg: 0.0
+  weight_multiview_consistency: 0.0
 
   # GPU memory profiling (logs peak VRAM per section)
   profile_gpu: False

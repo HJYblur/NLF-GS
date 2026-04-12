@@ -91,7 +91,6 @@ train:
 
   # Loss weights
   weight_l1: 1.0
-  weight_l2: 0.25
   weight_masked_ssim: 0.1
   weight_perceptual: 0.05
   weight_scale_reg: 0.005

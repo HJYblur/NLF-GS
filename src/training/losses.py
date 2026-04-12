@@ -12,7 +12,6 @@ class LossFunctions(nn.Module):
             weight_rgb if weight_rgb is not None else float(train_cfg.get("weight_rgb", 1.0))
         )
         self.weight_l1 = float(train_cfg.get("weight_l1", 0.0))
-        self.weight_l2 = float(train_cfg.get("weight_l2", 0.0))
         self.weight_masked_ssim = float(train_cfg.get("weight_masked_ssim", 0.0))
         self.weight_perceptual = float(train_cfg.get("weight_perceptual", 0.0))
         self.weight_scale_reg = float(train_cfg.get("weight_scale_reg", 0.0))
@@ -21,6 +20,10 @@ class LossFunctions(nn.Module):
         self.weight_offset_reg = float(train_cfg.get("weight_offset_reg", 0.0))
         self.weight_multiview_consistency = float(
             train_cfg.get("weight_multiview_consistency", 0.0)
+        )
+        # mean(1 - alpha): encourages all Gaussians to be less transparent (0 = off)
+        self.weight_opacity_nontransparent = float(
+            train_cfg.get("weight_opacity_nontransparent", 0.0)
         )
 
     def _foreground_mask(self, gt_imgs: torch.Tensor) -> torch.Tensor:
@@ -35,13 +38,6 @@ class LossFunctions(nn.Module):
         if valid <= 0:
             return torch.zeros((), device=pred_imgs.device)
         return (pred_imgs - gt_imgs).abs().mul(mask3).sum() / valid
-    
-    def _masked_l2(self, pred_imgs: torch.Tensor, gt_imgs: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
-        mask3 = mask.expand_as(pred_imgs)
-        valid = mask3.sum()
-        if valid <= 0:
-            return torch.zeros((), device=pred_imgs.device)
-        return (pred_imgs - gt_imgs).pow(2).mul(mask3).sum() / valid
 
     def _masked_ssim(
         self,
@@ -145,11 +141,20 @@ class LossFunctions(nn.Module):
             return torch.zeros((), device=device)
         return gaussian_3d.var(dim=0, unbiased=False).mean()
 
+    def mean_transparency_penalty(self, gaussian_params, device: torch.device) -> torch.Tensor:
+        """mean(1 - alpha): lower is more opaque. Minimizing this pushes alpha toward 1."""
+        if gaussian_params is None:
+            return torch.zeros((), device=device)
+        alpha = gaussian_params.get("alpha")
+        if alpha is None:
+            return torch.zeros((), device=device)
+        a = alpha.reshape(-1).clamp(0.0, 1.0)
+        return (1.0 - a).mean()
+
     def forward(self, pred_imgs, gt_imgs, gt_masks, gaussian_params=None, gaussian_3d=None):
         fg_mask = self._foreground_mask(gt_imgs)
 
         l1_loss = self._masked_l1(pred_imgs, gt_imgs, fg_mask)
-        l2_loss = self._masked_l2(pred_imgs, gt_imgs, fg_mask)
         masked_ssim_val = self._masked_ssim(pred_imgs, gt_imgs, fg_mask)
         perceptual_loss = self._masked_multiscale_perceptual(pred_imgs, gt_imgs, fg_mask)
 
@@ -166,15 +171,22 @@ class LossFunctions(nn.Module):
             gaussian_3d, device=pred_imgs.device
         )
 
+        if self.weight_opacity_nontransparent > 0:
+            transparency_penalty = self.mean_transparency_penalty(
+                gaussian_params, device=pred_imgs.device
+            )
+        else:
+            transparency_penalty = torch.zeros((), device=pred_imgs.device)
+
         ssim_loss = 1 - masked_ssim_val
         final_loss = (
             self.weight_l1 * l1_loss
-            + self.weight_l2 * l2_loss
             + self.weight_masked_ssim * ssim_loss
             + self.weight_perceptual * perceptual_loss
             + self.weight_silhouette * sil_loss
             + self.weight_scale_reg * scale_reg
             + self.weight_offset_reg * offset_reg
+            + self.weight_opacity_nontransparent * transparency_penalty
             # self.weight_opacity_reg * opacity_reg
             # self.weight_multiview_consistency * multiview_consistency
         )
@@ -182,12 +194,12 @@ class LossFunctions(nn.Module):
         return {
             "loss": final_loss,
             "l1": l1_loss,
-            "l2": l2_loss,
             "silhouette": sil_loss,
             "masked_ssim": ssim_loss,
             "perceptual": perceptual_loss,
             "scale_reg": scale_reg,
             "offset_reg": offset_reg,
+            "transparency_penalty": transparency_penalty,
             # "opacity_reg": opacity_reg,
             # "multiview_consistency": multiview_consistency,
         }
