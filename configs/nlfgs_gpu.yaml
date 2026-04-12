@@ -9,10 +9,9 @@ data:
   smplx_root: data/THuman_2.0_smplx_paras
   num_views: 4
   template_path: models/avatar_template.ply
-  image_size: [512, 512] # [W, H]
+  image_size: [1024,1024] # [W, H]
 
 camera:
-  image_size: [512, 512] # [W, H]
   distance: 1.5 # Camera distance from origin
   yfov_deg: 45.0 # Vertical field of view in degrees
   up: [0.0, 1.0, 0.0] # Default up vector
