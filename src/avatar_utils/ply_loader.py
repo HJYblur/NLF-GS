@@ -1,8 +1,11 @@
+import math
+import os
+from collections import namedtuple
+from typing import Any, Dict, Optional, Union
+
 import numpy as np
 import torch
-import os
 import trimesh
-from collections import namedtuple
 from plyfile import PlyData, PlyElement
 
 
@@ -178,21 +181,45 @@ def load_ply(path, mode="default", cano_mesh=None, return_torch: bool = True):
     }
 
 
-def save_ply(data, path: str):
-    """Save Gaussian template to a PLY file.
+def _infer_sh_degree_from_flat_dim(K: int) -> int:
+    """Infer SH degree d from flat width K = (d+1)^2 * 3 (RGB per spherical-harmonic basis)."""
+    if K < 3 or K % 3 != 0:
+        raise ValueError(f"SH flat dim must be >= 3 and divisible by 3, got {K}")
+    n_basis = K // 3
+    r = int(round(math.sqrt(n_basis)))
+    if r * r != n_basis:
+        raise ValueError(
+            f"SH flat dim implies non-square basis count: K={K} -> n_basis={n_basis}"
+        )
+    return r - 1
 
-    Expected `data` to be a dict-like or object with attributes:
-      data['xyz']       -> (N,3) float
-      ----- data['normals']   -> (N,3) float
-      data['shs']       -> (N,3) float (DC terms)
-      ----- data['sh_rest']   -> (N,45) float (extra SH coeffs)
-      data['opacities'] -> (N,1) or (N,) float
-      data['scales']    -> (N,3) float
-      data['rots']      -> (N,4) float (quaternion)
-      data['parent']    -> (N,3) int (vertex indices per gaussian)
 
-    The saved PLY will include placeholder SH coefficients (f_rest_0..f_rest_44) set to zero
-    so that loaders expecting a fixed number of SH extras can read the file.
+def _split_sh_dc_rest(sh_flat: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Split flat (N, K) SH into DC (N, 3) and rest (N, (K-3)) in gsplat / Inria layout."""
+    N, K = sh_flat.shape
+    d = _infer_sh_degree_from_flat_dim(K)
+    n_basis = (d + 1) ** 2
+    sh = sh_flat.reshape(N, n_basis, 3)
+    dc = sh[:, 0, :].astype(np.float32)
+    rest = sh[:, 1:, :].reshape(N, -1).astype(np.float32)
+    return dc, rest
+
+
+def save_ply(
+    data,
+    path: str,
+    *,
+    log_scales: bool = False,
+    include_parent: Optional[bool] = None,
+):
+    """Save Gaussian template to a PLY file (DC-only ``shs``), or full-SH export when ``shs`` is wider.
+
+    Original behavior: ``shs`` shape (N, 3) — opacity, ``f_dc_*``, scales, rot, parent.
+
+    Extended: ``shs`` shape ``(N, (d+1)^2 * 3)`` for any valid degree ``d`` — writes
+    ``x,y,z``, ``nx,ny,nz``, ``f_dc_*``, ``f_rest_*``, ``opacity``, ``scale_*``, ``rot_*``,
+    and optional ``parent_*`` (Inria / 3DGS-friendly). Use ``log_scales=True`` for log-space
+    scales in the file.
     """
 
     # Normalize accessors (accept numpy arrays or torch tensors)
@@ -221,21 +248,84 @@ def save_ply(data, path: str):
             )
         return v
 
-    shs = get_field("shs", 0.5, shape=(3,)).reshape(N, -1)  # DC RGB
+    shs = get_field("shs", 0.5, shape=(3,)).reshape(N, -1)  # DC RGB or full flat SH
     opacities = get_field("opacities", 1.0).reshape(N, -1)
     scales = get_field("scales", 1.0, shape=(3,)).reshape(N, -1)
     rots = get_field("rots", 0.0, shape=(4,)).reshape(N, -1)
-    # parent is required and must be an (N,3) array of vertex indices per-gaussian
+
+    parents = None
     if hasattr(data, "parent"):
         parents = to_numpy(getattr(data, "parent"))
     elif isinstance(data, dict) and "parent" in data:
         parents = to_numpy(data["parent"])
-    else:
+
+    # --- Full spherical harmonics (decoded Gaussians): any degree d with K = (d+1)^2 * 3 ---
+    if shs.shape[1] > 3:
+        if include_parent is None:
+            include_parent = parents is not None
+        if include_parent and parents is None:
+            raise ValueError(
+                "include_parent=True requires a 'parent' field with mesh vertex indices"
+            )
+        dc, rest = _split_sh_dc_rest(shs.astype(np.float32))
+        scales_out = (
+            np.log(np.maximum(scales.astype(np.float64), 1e-10)).astype(np.float32)
+            if log_scales
+            else scales.astype(np.float32)
+        )
+        parent_count = int(parents.shape[1]) if (include_parent and parents is not None) else 0
+
+        vertex_dtype = [
+            ("x", "f4"),
+            ("y", "f4"),
+            ("z", "f4"),
+            ("nx", "f4"),
+            ("ny", "f4"),
+            ("nz", "f4"),
+        ]
+        vertex_dtype += [(f"f_dc_{i}", "f4") for i in range(3)]
+        for i in range(rest.shape[1]):
+            vertex_dtype.append((f"f_rest_{i}", "f4"))
+        vertex_dtype.append(("opacity", "f4"))
+        for i in range(scales_out.shape[1]):
+            vertex_dtype.append((f"scale_{i}", "f4"))
+        for i in range(rots.shape[1]):
+            vertex_dtype.append((f"rot_{i}", "f4"))
+        if parent_count > 0:
+            vertex_dtype += [(f"parent_{i}", "i4") for i in range(parent_count)]
+
+        vertices = np.empty(N, dtype=vertex_dtype)
+        vertices["x"] = xyz[:, 0].astype(np.float32)
+        vertices["y"] = xyz[:, 1].astype(np.float32)
+        vertices["z"] = xyz[:, 2].astype(np.float32)
+        vertices["nx"] = 0.0
+        vertices["ny"] = 0.0
+        vertices["nz"] = 0.0
+        vertices["f_dc_0"] = dc[:, 0]
+        vertices["f_dc_1"] = dc[:, 1]
+        vertices["f_dc_2"] = dc[:, 2]
+        for i in range(rest.shape[1]):
+            vertices[f"f_rest_{i}"] = rest[:, i]
+        vertices["opacity"] = opacities.reshape(-1).astype(np.float32)
+        for i in range(scales_out.shape[1]):
+            vertices[f"scale_{i}"] = scales_out[:, i]
+        for i in range(rots.shape[1]):
+            vertices[f"rot_{i}"] = rots[:, i]
+        if parent_count > 0:
+            for i in range(parent_count):
+                vertices[f"parent_{i}"] = parents[:, i].astype(np.int32)
+
+        os.makedirs(os.path.dirname(os.path.abspath(path)) or ".", exist_ok=True)
+        ply_el = PlyElement.describe(vertices, "vertex")
+        PlyData([ply_el], text=False).write(path)
+        return
+
+    # --- Original template path: DC-only SH (N,3) ---
+    if parents is None:
         raise ValueError(
             "save_ply requires a 'parent' field with shape (N,3) containing vertex indices"
         )
 
-    # Validate parents are (N,P) and build final structured dtype including parent fields
     parents = np.asarray(parents)
     if parents.ndim != 2:
         raise ValueError(
@@ -285,31 +375,48 @@ def save_ply(data, path: str):
     for i in range(parent_count):
         vertices[f"parent_{i}"] = parents[:, i].astype(np.int32)
 
+    os.makedirs(os.path.dirname(os.path.abspath(path)) or ".", exist_ok=True)
     ply_el = PlyElement.describe(vertices, "vertex")
     PlyData([ply_el], text=False).write(path)
 
 
-def reconstruct_gaussian_avatar_as_ply(xyz, gaussian_params, template, output_path):
+def reconstruct_gaussian_avatar_as_ply(
+    xyz: Union[torch.Tensor, np.ndarray],
+    gaussian_params: Dict[str, Any],
+    template: Optional[Dict[str, Any]],
+    output_path: str,
+    *,
+    log_scales: bool = True,
+    include_parent: bool = True,
+) -> Dict[str, Any]:
     """
     Reconstruct a Gaussian avatar from the given parameters and return (and save) as a PLY file.
+    Full ``sh`` tensors (any supported SH degree) are written as ``f_dc_*`` + ``f_rest_*``.
     """
-    os.makedirs(os.path.dirname(output_path), exist_ok=True)
-    # Extract parameters
+    _out_dir = os.path.dirname(output_path)
+    if _out_dir:
+        os.makedirs(_out_dir, exist_ok=True)
     scales = gaussian_params["scales"]
     rots = gaussian_params["rotation"]
     alphas = gaussian_params["alpha"]
     shs = gaussian_params["sh"]
 
-    # Create a new data structure for the PLY
-    ply_data = {
+    ply_data: Dict[str, Any] = {
         "xyz": xyz,
         "scales": scales,
         "rots": rots,
         "opacities": alphas,
         "shs": shs,
-        "parent": template["parent"],
     }
+    if include_parent:
+        if template is None or "parent" not in template:
+            raise ValueError("include_parent=True requires template['parent'] (face vertex indices).")
+        ply_data["parent"] = template["parent"]
 
-    # Save the PLY file
-    save_ply(ply_data, output_path)
+    save_ply(
+        ply_data,
+        output_path,
+        log_scales=log_scales,
+        include_parent=include_parent,
+    )
     return ply_data
