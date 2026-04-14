@@ -47,6 +47,36 @@ def _resolve_path(p: str | Path) -> Path:
     return _repo_root() / path
 
 
+def _inference_ply_filename(inf_cfg: dict, subject: str) -> str:
+    """Default PLY name from ``smplx_source`` if ``ply_filename`` is unset."""
+    raw = inf_cfg.get("ply_filename")
+    if raw is not None and str(raw).strip() != "":
+        return str(raw)
+    src = str(inf_cfg.get("smplx_source", "subject_params")).lower().strip()
+    if src == "subject_params":
+        return f"paramed_{subject}.ply"
+    return f"canonical_{subject}.ply"
+
+
+def _inference_save_prefix(inf_cfg: dict) -> str:
+    """Default canonical-render PNG prefix from ``smplx_source`` if ``save_prefix`` is unset."""
+    raw = inf_cfg.get("save_prefix")
+    if raw is not None and str(raw).strip() != "":
+        return str(raw)
+    src = str(inf_cfg.get("smplx_source", "subject_params")).lower().strip()
+    if src == "subject_params":
+        return "paramed"
+    return "canonical"
+
+
+def _inference_pt_filename(inf_cfg: dict, ply_basename: str) -> str:
+    """Tensor bundle name: same stem as PLY unless ``pt_filename`` is set."""
+    raw = inf_cfg.get("pt_filename")
+    if raw is not None and str(raw).strip() != "":
+        return str(raw)
+    return f"{Path(ply_basename).stem}.pt"
+
+
 def _vertices3d_for_inference(cfg: dict, subject: str) -> torch.Tensor:
     """SMPL-X vertices aligned with avatar_template parent indices (see configs: inference.smplx_source)."""
     inf = cfg.get("inference", {})
@@ -262,7 +292,7 @@ def main():
     sub_dir = out_root / subject
     sub_dir.mkdir(parents=True, exist_ok=True)
 
-    ply_name = str(inf_cfg.get("ply_filename", "avatar_gaussians.ply"))
+    ply_name = _inference_ply_filename(inf_cfg, args.subject)
     ply_path = sub_dir / ply_name
     gp_cpu = {k: v.detach().cpu() for k, v in gaussian_params.items()}
     reconstruct_gaussian_avatar_as_ply(
@@ -275,7 +305,7 @@ def main():
     )
 
     if bool(inf_cfg.get("save_pt", False)):
-        save_path = sub_dir / "avatar_gaussians.pt"
+        save_path = sub_dir / _inference_pt_filename(inf_cfg, ply_name)
         torch.save(
             {
                 "subject": subject,
@@ -301,7 +331,7 @@ def main():
     gaussian_params_gpu = {k: v.to(device) for k, v in gaussian_params.items()}
 
     views_dir = sub_dir / str(inf_cfg.get("canonical_views_subdir", "canonical_views"))
-    train_prefix = str(inf_cfg.get("train_view_save_prefix", "train"))
+    train_prefix = _inference_save_prefix(inf_cfg)
     renderer.render_canonical_views(
         gaussian_3d_gpu,
         gaussian_params_gpu,

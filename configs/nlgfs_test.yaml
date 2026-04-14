@@ -93,11 +93,9 @@ inference:
   # canonical_mesh: vertices from avatar.template.cano_mesh_path (same topology as avatar_template.ply)
   smplx_source: subject_params
   output_dir: output
-  ply_filename: avatar_gaussians.ply
-  # PLY export: log scales match SuperSplat / Inria-style viewers; set false to write linear scales.
+  # Settings for saving PLY files
   ply_log_scales: false
   ply_include_parent: false
-  save_pt: false
-  # Same batched render as training (load_camera_mapping + gsplat); PNGs under canonical_views_subdir/
+
+  save_pt: true
   canonical_views_subdir: canonical_views
-  train_view_save_prefix: train
