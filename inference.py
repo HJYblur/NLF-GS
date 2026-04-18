@@ -36,6 +36,42 @@ def _find_subject_index(ds: AvatarDataset, subject: str) -> int:
     )
 
 
+def _subject_sort_key(subject: str) -> tuple[int, int | str]:
+    if subject.isdigit():
+        return (0, int(subject))
+    return (1, subject)
+
+
+def _subjects_in_range(cfg: dict, start_subject: str, end_subject: str) -> list[str]:
+    """Return available dataset subjects within the inclusive [start, end] range."""
+    data_root = cfg.get("data", {}).get("root", "data/processed_test")
+    ds = AvatarDataset(root=data_root)
+    available = sorted({str(rec["subject"]) for rec in ds._records}, key=_subject_sort_key)
+
+    if not available:
+        raise ValueError(f"No subjects found under {data_root!r}.")
+
+    start = str(start_subject).strip()
+    end = str(end_subject).strip()
+
+    if start.isdigit() and end.isdigit():
+        start_i, end_i = int(start), int(end)
+        if start_i > end_i:
+            raise ValueError(f"start-subject ({start}) must be <= end-subject ({end}).")
+        selected = [s for s in available if s.isdigit() and start_i <= int(s) <= end_i]
+    else:
+        if start > end:
+            raise ValueError(f"start-subject ({start}) must be <= end-subject ({end}) in lexical order.")
+        selected = [s for s in available if start <= s <= end]
+
+    if not selected:
+        raise ValueError(
+            f"No dataset subjects found in range [{start}, {end}] under {data_root!r}."
+        )
+
+    return selected
+
+
 def _repo_root() -> Path:
     return Path(__file__).resolve().parent
 
@@ -247,10 +283,16 @@ def run_inference(
 def main():
     parser = argparse.ArgumentParser(description="NLF-GS inference (single subject, 4 views)")
     parser.add_argument(
-        "--subject",
+        "--start-subject",
         type=str,
         required=True,
-        help="Subject folder name under data/processed_test/<subject>/",
+        help="Start subject id (inclusive), e.g. 0001",
+    )
+    parser.add_argument(
+        "--end-subject",
+        type=str,
+        required=True,
+        help="End subject id (inclusive), e.g. 0020",
     )
     parser.add_argument(
         "--config",
@@ -284,63 +326,73 @@ def main():
         raise ValueError("Pass --checkpoint or set inference.checkpoint in the YAML config.")
     ckpt_path = _resolve_path(str(ckpt_arg))
 
-    gaussian_3d, gaussian_params, vertices3d, subject, template_avatar = run_inference(
-        cfg, args.subject, str(ckpt_path), device
+    subjects = _subjects_in_range(cfg, args.start_subject, args.end_subject)
+    print(
+        f"Running inference for {len(subjects)} subject(s): "
+        f"{subjects[0]} -> {subjects[-1]}"
     )
+
+    renderer = GsplatRenderer() if device.type == "cuda" else None
+    train_prefix = _inference_save_prefix(inf_cfg)
 
     out_root = Path(str(inf_cfg.get("output_dir", cfg.get("render", {}).get("save_path", "output"))))
-    sub_dir = out_root / subject
-    sub_dir.mkdir(parents=True, exist_ok=True)
 
-    ply_name = _inference_ply_filename(inf_cfg, args.subject)
-    ply_path = sub_dir / ply_name
-    gp_cpu = {k: v.detach().cpu() for k, v in gaussian_params.items()}
-    reconstruct_gaussian_avatar_as_ply(
-        gaussian_3d.detach().cpu(),
-        gp_cpu,
-        template_avatar,
-        str(ply_path),
-        log_scales=bool(inf_cfg.get("ply_log_scales", True)),
-        include_parent=bool(inf_cfg.get("ply_include_parent", True)),
-    )
-
-    if bool(inf_cfg.get("save_pt", False)):
-        save_path = sub_dir / _inference_pt_filename(inf_cfg, ply_name)
-        torch.save(
-            {
-                "subject": subject,
-                "gaussian_3d": gaussian_3d.detach().cpu(),
-                "gaussian_params": gp_cpu,
-                "vertices3d": vertices3d,
-                "checkpoint": str(ckpt_path.resolve()),
-                "config": str(Path(args.config).resolve()),
-            },
-            save_path,
+    for subject in subjects:
+        gaussian_3d, gaussian_params, vertices3d, _subject, template_avatar = run_inference(
+            cfg, subject, str(ckpt_path), device
         )
-        print(f"Saved tensor bundle to {save_path.resolve()}")
 
-    if device.type != "cuda":
-        print(
-            "Skipping canonical-view PNG renders (CUDA required for gsplat). "
-            f"Gaussian PLY saved to {ply_path.resolve()}."
+        sub_dir = out_root / subject
+        sub_dir.mkdir(parents=True, exist_ok=True)
+
+        ply_name = _inference_ply_filename(inf_cfg, subject)
+        ply_path = sub_dir / ply_name
+        gp_cpu = {k: v.detach().cpu() for k, v in gaussian_params.items()}
+        reconstruct_gaussian_avatar_as_ply(
+            gaussian_3d.detach().cpu(),
+            gp_cpu,
+            template_avatar,
+            str(ply_path),
+            log_scales=bool(inf_cfg.get("ply_log_scales", True)),
+            include_parent=bool(inf_cfg.get("ply_include_parent", True)),
         )
-        return
 
-    renderer = GsplatRenderer()
-    gaussian_3d_gpu = gaussian_3d.to(device)
-    gaussian_params_gpu = {k: v.to(device) for k, v in gaussian_params.items()}
+        if bool(inf_cfg.get("save_pt", False)):
+            save_path = sub_dir / _inference_pt_filename(inf_cfg, ply_name)
+            torch.save(
+                {
+                    "subject": subject,
+                    "gaussian_3d": gaussian_3d.detach().cpu(),
+                    "gaussian_params": gp_cpu,
+                    "vertices3d": vertices3d,
+                    "checkpoint": str(ckpt_path.resolve()),
+                    "config": str(Path(args.config).resolve()),
+                },
+                save_path,
+            )
+            print(f"[{subject}] Saved tensor bundle to {save_path.resolve()}")
 
-    views_dir = sub_dir / str(inf_cfg.get("canonical_views_subdir", "canonical_views"))
-    train_prefix = _inference_save_prefix(inf_cfg)
-    renderer.render_canonical_views(
-        gaussian_3d_gpu,
-        gaussian_params_gpu,
-        views_dir,
-        save_prefix=train_prefix,
-    )
+        if device.type != "cuda":
+            print(
+                f"[{subject}] Skipping canonical-view PNG renders (CUDA required for gsplat). "
+                f"Gaussian PLY saved to {ply_path.resolve()}."
+            )
+            continue
 
-    print(f"Saved Gaussian PLY to {ply_path.resolve()}")
-    print(f"Saved {train_prefix}_*.png under {views_dir.resolve()}")
+        gaussian_3d_gpu = gaussian_3d.to(device)
+        gaussian_params_gpu = {k: v.to(device) for k, v in gaussian_params.items()}
+
+        views_dir = sub_dir / str(inf_cfg.get("canonical_views_subdir", "canonical_views"))
+        assert renderer is not None
+        renderer.render_canonical_views(
+            gaussian_3d_gpu,
+            gaussian_params_gpu,
+            views_dir,
+            save_prefix=train_prefix,
+        )
+
+        print(f"[{subject}] Saved Gaussian PLY to {ply_path.resolve()}")
+        print(f"[{subject}] Saved {train_prefix}_*.png under {views_dir.resolve()}")
 
 
 if __name__ == "__main__":
