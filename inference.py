@@ -14,7 +14,7 @@ import torch
 sys.path.append(str(Path(__file__).parent / "src"))
 
 from src.avatar_utils.config import load_config
-from src.avatar_utils.nlf_build import (
+from src.training.nlfgs_builder import (
     apply_matmul_precision_for_device,
     build_nlf_gaussian_model,
     device_from_cfg,
@@ -25,7 +25,7 @@ from src.avatar_utils.smplx_loader import load_smplx_coord3d, vertices_3d_to_2d
 from src.avatar_utils.camera import load_camera_mapping
 from src.data.datasets import VIEW_ORDER, AvatarDataset
 from src.encoder.avatar_template import AvatarTemplate
-from src.training.trainer import NlfGaussianModel
+from src.training.nlfgs import NlfGaussianModel
 
 
 def _find_subject_index(ds: AvatarDataset, subject: str) -> int:
@@ -202,16 +202,6 @@ def run_inference(
         else:
             feats = torch.cat(feat_list, dim=0)
 
-        if isinstance(feats, dict):
-            feat_for_id = next(iter(feats.values()))
-        else:
-            feat_for_id = feats
-
-        if model.use_identity_encoder:
-            z_id = model.identity_encoder(feature_map=feat_for_id)
-        else:
-            z_id = None
-
         local_feats, view_weights, gaussian_3d, _centers2d = (
             model.avatar_estimator.feature_sample_with_visibility(
                 feats,
@@ -237,13 +227,11 @@ def run_inference(
                 local_feats = (local_feats * weights.unsqueeze(-1)).sum(dim=0, keepdim=True)
             gaussian_3d_decode = gaussian_3d[0:1]
             local_frames_decode = local_frames[0:1]
-            z_id_decode = None if z_id is None else z_id.mean(dim=0, keepdim=True)
         else:
             gaussian_3d_decode = gaussian_3d
             local_frames_decode = local_frames
-            z_id_decode = z_id
 
-        gaussian_params_fused = model.decoder(local_feats, z_id_decode)
+        gaussian_params_fused = model.decoder(local_feats)
         gaussian_3d_fused = gaussian_3d_decode[0]
         offset_local = gaussian_params_fused.get("offset", None)
         if offset_local is not None:

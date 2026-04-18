@@ -6,8 +6,7 @@ from avatar_utils.config import get_config
 
 class GaussianDecoder(nn.Module):
     """
-    MLP head to predict Gaussian parameters taking in the encoding of pose info + appearance features,
-    while incorporating identity latent code as a FiLM layer to modulate the features.
+    MLP head mapping local surface features to Gaussian parameters.
 
     Output parameterization (per Gaussian):
       - scales: 3 values (positive radii)
@@ -25,7 +24,6 @@ class GaussianDecoder(nn.Module):
         self.in_dim = int(dec_cfg.get("in_dim", cfg.get("model", {}).get("local_feature_dim", 512)))
         self.hidden = int(dec_cfg.get("hidden", 256))
         self.out_dim = int(dec_cfg.get("out_dim", 56))
-        self.z_dim = int(cfg.get("identity_encoder", {}).get("latent_dim", 64))
 
         # Scale parameterization bounds (sigmoid-based, always differentiable)
         self.scale_min = float(dec_cfg.get("scale_min", 1e-6))
@@ -41,9 +39,6 @@ class GaussianDecoder(nn.Module):
         # first local block
         self.fc1 = nn.Linear(self.in_dim, self.hidden)
         self.activation1 = nn.ReLU(inplace=True)
-
-        # FiLM film_net
-        self.film_net = nn.Linear(self.z_dim, 2 * self.hidden)
 
         # remaining MLP
         self.mlp = nn.Sequential(
@@ -87,10 +82,9 @@ class GaussianDecoder(nn.Module):
                 else:
                     sh_bias.uniform_(-0.05, 0.05)
 
-    def forward(self, combined_feats, z_id=None):
+    def forward(self, combined_feats):
         """
         combined_feats: (1, N, in_dim)
-        z_id: Optional (1, z_dim). If provided, FiLM modulation is applied.
 
         Returns a dict of parameterized Gaussian fields without batch fusion:
             scales: (N,3), rotation: (N,4), alpha: (N,), sh: (N,K)
@@ -110,26 +104,12 @@ class GaussianDecoder(nn.Module):
                 f"Decoder expects aggregated inputs with batch size 1, got B={B}"
             )
 
-        # Precompute FiLM gamma/beta once per batch and reuse for chunks if z_id is provided
-        if z_id is not None:
-            gamma_beta = self.film_net(z_id)  # (B, 2H)
-            gamma, beta = gamma_beta.chunk(2, dim=-1)
-            gamma = gamma.unsqueeze(1)  # (B,1,H)
-            beta = beta.unsqueeze(1)  # (B,1,H)
-        else:
-            gamma = None
-            beta = None
-
         parts = {"scales": [], "rotation": [], "alpha": [], "offset": [], "sh": []}
         for start in range(0, N, chunk_size):
             end = min(start + chunk_size, N)
             feats_chunk = combined_feats[:, start:end, :]  # (B,nc,in_dim)
 
-            # First block + FiLM
-            h = self.fc1(feats_chunk)  # (B,nc,H)
-            if gamma is not None and beta is not None:
-                h = (1.0 + gamma) * h + beta
-            h = self.activation1(h)
+            h = self.activation1(self.fc1(feats_chunk))  # (B,nc,H)
 
             # Remaining MLP
             out = self.mlp(h)  # (B,nc,out_dim)

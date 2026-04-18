@@ -12,7 +12,7 @@ from lightning.pytorch.loggers import WandbLogger
 sys.path.append(str(Path(__file__).parent / "src"))
 
 from src.avatar_utils.config import load_config
-from src.avatar_utils.nlf_build import (
+from src.training.nlfgs_builder import (
     apply_matmul_precision_for_device,
     build_nlf_gaussian_model,
     device_from_cfg,
@@ -44,9 +44,7 @@ def main():
         entity="lemon-tu-delft",
         log_model=False,
     )
-    # Keep Lightning hyperparam logging minimal and push the full config directly
-    # to wandb run config, which is more reliable for nested structures.
-    wandb_logger.log_hyperparams({"config_path": args.config})
+    # Push full config to wandb run config (path + nested YAML tree + snapshots).
     if hasattr(wandb_logger, "experiment") and wandb_logger.experiment is not None:
         safe_cfg = cfg if isinstance(cfg, dict) else {}
         # 1) canonical nested config tree
@@ -74,7 +72,7 @@ def main():
     profile_gpu = cfg.get("train", {}).get("profile_gpu", False)
     callbacks = []
     if profile_gpu and device.type == "cuda":
-        from src.training.gpu_profiler import GpuMemoryProfilerCallback
+        from src.training.nlfgs_training_utils import GpuMemoryProfilerCallback
         callbacks.append(GpuMemoryProfilerCallback())
 
     trainer = L.Trainer(

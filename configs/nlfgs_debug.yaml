@@ -34,10 +34,6 @@ backbone:
 model:
   local_feature_dim: 768
 
-identity_encoder:
-  latent_dim: 64
-  use_flag: False
-
 avatar:
   template:
     mode: default # options: default | generate | test
@@ -98,24 +94,11 @@ train:
 
   # GPU memory profiling (logs peak VRAM per section)
   profile_gpu: False
-  log_train_losses: true
-  log_val_losses: true
-  tracked_losses: null # null logs all losses; set list like ["loss", "l1"] to filter
-  test_renders: [7, 100, 350] # subject IDs whose renders are logged online
-
-analysis:
-  dump_local_feats: false # set true to save local_feats / fusion_data tensors
-  dump_collision_data: true # when dump_local_feats: also write collision_data_<subject>.pt
-  dump_subject: "0007" # subject ID to dump; null means dump every subject
-  dump_dir: tmp/analysis # directory where .pt files are written
+  # WandB RGB render logging: numeric subject IDs, or [-1] for all subjects
+  test_renders: [7, 100, 350]
 
 render:
   save_path: output # kept for backward compatibility; renders are logged online by default
   view_chunk_size: 1
   log_online: true
   log_stages: ["train", "val"]
-
-
-debug:
-  dump_view_weight_images: true
-  view_weight_dir: debug

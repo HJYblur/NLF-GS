@@ -31,10 +31,6 @@ backbone:
 model:
   local_feature_dim: 768
 
-identity_encoder:
-  latent_dim: 64
-  use_flag: false
-
 avatar:
   template:
     mode: default
@@ -75,10 +71,8 @@ train:
   num_workers: 0
   epochs: 1
   val_ratio: 0.0
-
-analysis:
-  dump_local_feats: false
-  dump_collision_data: false
+  # WandB RGB render logging: subject IDs, [-1] for all, or [] to disable
+  test_renders: []
 
 render:
   save_path: output

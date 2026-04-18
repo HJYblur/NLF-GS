@@ -8,9 +8,8 @@ import torch
 
 from decoder.gaussian_decoder import GaussianDecoder
 from encoder.feature_extractor import FeatureExtractor
-from encoder.identity_encoder import IdentityEncoder
 from render.gaussian_renderer import GsplatRenderer
-from training.trainer import NlfGaussianModel
+from training.nlfgs import NlfGaussianModel
 
 
 def device_from_cfg(cfg: Dict[str, Any]) -> torch.device:
@@ -52,15 +51,10 @@ def build_nlf_gaussian_model(cfg: Dict[str, Any], device: torch.device) -> NlfGa
         resnet_weights_path=backbone_cfg.get("resnet50_weights_path"),
         freeze_resnet_fpn=train_decoder_only,
     )
-    fpn_out_channels = int(backbone_cfg.get("fpn_out_channels", 256))
-    c_local = fpn_out_channels * len(fpn_levels)
-    id_latent_dim = int(cfg["identity_encoder"].get("latent_dim", 64))
-    id_encoder = IdentityEncoder(backbone_feat_dim=c_local, latent_dim=id_latent_dim)
     decoder = GaussianDecoder()
     renderer = gsplat_renderer_if_cuda(device)
     return NlfGaussianModel(
-        backbone_adapter=backbone,
-        identity_encoder=id_encoder,
+        backbone=backbone,
         decoder=decoder,
         renderer=renderer,
         train_decoder_only=train_decoder_only,
