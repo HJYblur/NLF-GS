@@ -138,7 +138,7 @@ def _vertices3d_for_inference(cfg: dict, subject: str) -> torch.Tensor:
     raise FileNotFoundError(
         f"SMPL-X params not found for subject {subject!r} under {smplx_root} "
         f"(expected smplx_param.pkl or mesh_smplx.obj). "
-        f"Set inference.smplx_source: canonical_mesh to use avatar.template.cano_mesh_path instead."
+        f"Set inference.smplx_source: canonical_mesh to use avatar_template.cano_mesh_path instead."
     )
 
 

@@ -1,11 +1,13 @@
-# Inference / test config for NLF-GS (single subject, 4 views per run).
-# Default test folder layout matches training `processed/` but under `data/processed_test/<subject>/`.
+# Inference / test config (single subject, 4 views). Same section order as training configs + inference.
+# Default layout matches training `processed/` but under `data/processed_test/<subject>/`.
 
+# --- Runtime / process ---
 sys:
   device: cuda
   matmul_precision: medium
-  debug: false
+  debug: False
 
+# --- Dataset & resolution ---
 data:
   raw: data
   root: processed_test
@@ -13,6 +15,7 @@ data:
   num_views: 4
   image_size: [1024, 1024]
 
+# --- Canonical cameras ---
 camera:
   distance: 1.5
   yfov_deg: 45.0
@@ -23,30 +26,28 @@ camera:
     left: [-1.0, 0.0, 0.0]
     right: [1.0, 0.0, 0.0]
 
+# --- Perception stack ---
 backbone:
   fpn_levels: ["p2", "p3", "p4"]
   fpn_out_channels: 256
-  resnet50_weights_path: models/torchvision/resnet50-0676ba61.pth
-
-model:
   local_feature_dim: 768
-
-avatar:
-  template:
-    mode: default
-    path: models/avatar_template.ply
-    cano_mesh_path: models/smplx/smplx_uv.obj
-    anim_mesh_path: tmp/output_smplx_mesh.ply
-    k_num_gaussians: 4
-    barycentric_coords:
-      - [0.6, 0.2, 0.2]
-      - [0.2, 0.6, 0.2]
-      - [0.2, 0.2, 0.6]
-      - [0.3333333333, 0.3333333333, 0.3333333333]
+  resnet50_weights_path: models/torchvision/resnet50-0676ba61.pth
 
 fusion:
   mode: learned
   hidden_dim: 256
+
+avatar_template:
+  mode: default # default | generate | test | anim
+  path: models/avatar_template.ply
+  cano_mesh_path: models/smplx/smplx_uv.obj
+  anim_mesh_path: tmp/output_smplx_mesh.ply
+  k_num_gaussians: 4
+  barycentric_coords:
+    - [0.6, 0.2, 0.2]
+    - [0.2, 0.6, 0.2]
+    - [0.2, 0.2, 0.6]
+    - [0.3333333333, 0.3333333333, 0.3333333333]
 
 decoder:
   in_dim: 768
@@ -63,26 +64,27 @@ decoder:
   sh_max: 1.0
   offset_scale: 0.01
 
+# --- Training-style keys (minimal for scripts that share loaders / loss defaults) ---
 train:
   accelerator: cuda
-  train_decoder_only: false
   precision: 16-mixed
   batch_size: 4
   num_workers: 0
   epochs: 1
   val_ratio: 0.0
-  # WandB RGB render logging: subject IDs, [-1] for all, or [] to disable
-  test_renders: []
+  train_decoder_only: false
+  test_renders: [] # WandB RGB: subject IDs, [-1] for all, or [] to disable
 
 render:
   save_path: output
   log_online: false
 
+# --- Inference-only (checkpoint, outputs, PLY options) ---
 inference:
   # Default checkpoint (repo-root relative when running from avatar-benchmark/)
   checkpoint: models/checkpoints/epoch=49-step=22500.ckpt
   # subject_params: smplx_root/<subject>/smplx_param.pkl or mesh_smplx.obj
-  # canonical_mesh: vertices from avatar.template.cano_mesh_path (same topology as avatar_template.ply)
+  # canonical_mesh: vertices from avatar_template.cano_mesh_path (same topology as avatar_template.path)
   smplx_source: subject_params
   output_dir: output
   # Settings for saving PLY files

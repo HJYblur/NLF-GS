@@ -35,17 +35,27 @@ class NlfGaussianModel(L.LightningModule):
         train_decoder_only: bool = True,
     ):
         super().__init__()
-        self.num_views = int(get_config().get("data", {}).get("num_views", 1))
+        cfg = get_config()
+        self.num_views = int(cfg.get("data", {}).get("num_views", 1))
         if self.num_views not in (1, 4):
             raise ValueError(f"data.num_views must be 1 or 4, got {self.num_views}")
-        fusion_cfg = get_config().get("fusion", {})
+        fusion_cfg = cfg.get("fusion", {})
         self.fusion_mode = str(fusion_cfg.get("mode", "fixed"))
         if self.num_views == 4 and self.fusion_mode not in ("fixed", "learned"):
             raise ValueError(f"fusion.mode must be 'fixed' or 'learned', got {self.fusion_mode!r}")
-        dec_cfg = get_config().get("decoder", {})
-        feat_dim = int(
-            dec_cfg.get("in_dim", get_config().get("model", {}).get("local_feature_dim", 768))
-        )
+        dec_cfg = cfg.get("decoder", {})
+        bb = cfg.get("backbone") or {}
+        if not isinstance(bb, dict):
+            bb = {}
+        if bb.get("local_feature_dim") is not None:
+            default_in_dim = int(bb["local_feature_dim"])
+        else:
+            levels = bb.get("fpn_levels") or ["p2", "p3", "p4"]
+            ch = int(bb.get("fpn_out_channels", 256))
+            default_in_dim = (
+                ch * len(levels) if isinstance(levels, (list, tuple)) and len(levels) > 0 else 768
+            )
+        feat_dim = int(dec_cfg.get("in_dim", default_in_dim))
         fusion_hidden = int(fusion_cfg.get("hidden_dim", dec_cfg.get("hidden", 256)))
         self.view_fusion = (
             LearnedViewFusion(feat_dim=feat_dim, hidden_dim=fusion_hidden)
@@ -65,7 +75,7 @@ class NlfGaussianModel(L.LightningModule):
             self.backbone.set_resnet_fpn_frozen(self.train_decoder_only)
 
         # Optimizer / scheduler hyperparameters (read in configure_nlf_gaussian_optimizers).
-        train_cfg = get_config().get("train", {})
+        train_cfg = cfg.get("train", {})
         lr = float(train_cfg.get("lr", 1e-4))
         wd = float(train_cfg.get("wd", train_cfg.get("weight_decay", 0.01)))
         betas = train_cfg.get("betas", [0.9, 0.99])
@@ -89,7 +99,7 @@ class NlfGaussianModel(L.LightningModule):
 
         # Logging: scalar losses (Lightning) and optional WandB render images.
         self._shape_debug_logged = False
-        render_cfg = get_config().get("render", {})
+        render_cfg = cfg.get("render", {})
         self._log_render_outputs_online = bool(render_cfg.get("log_online", True))
         self._render_log_stages = set(render_cfg.get("log_stages", ["train", "val"]))
         # WandB RGB logs (`_log_render_output`): `train.test_renders` = subject int IDs, or ``[-1]`` = all subjects.

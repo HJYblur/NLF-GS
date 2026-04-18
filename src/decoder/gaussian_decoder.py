@@ -19,9 +19,20 @@ class GaussianDecoder(nn.Module):
         super().__init__()
         cfg = get_config() or {}
         dec_cfg = cfg.get("decoder", {})
+        bb = cfg.get("backbone") or {}
+        if not isinstance(bb, dict):
+            bb = {}
+        if bb.get("local_feature_dim") is not None:
+            default_in_dim = int(bb["local_feature_dim"])
+        else:
+            levels = bb.get("fpn_levels") or ["p2", "p3", "p4"]
+            ch = int(bb.get("fpn_out_channels", 256))
+            default_in_dim = (
+                ch * len(levels) if isinstance(levels, (list, tuple)) and len(levels) > 0 else 768
+            )
 
         self.debug = debug
-        self.in_dim = int(dec_cfg.get("in_dim", cfg.get("model", {}).get("local_feature_dim", 512)))
+        self.in_dim = int(dec_cfg.get("in_dim", default_in_dim))
         self.hidden = int(dec_cfg.get("hidden", 256))
         self.out_dim = int(dec_cfg.get("out_dim", 56))
 

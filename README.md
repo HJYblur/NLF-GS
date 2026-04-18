@@ -28,7 +28,7 @@ Views follow fixed order: `front`, `back`, `left`, `right`. Masks are optional; 
 
 Vertices drive 3D Gaussian placement and 2D feature sampling via precomputed cameras (`data/THuman_cameras/*.json` when using THuman preprocessing).
 
-**Model assets** (paths in config): ResNet weights (`backbone.resnet50_weights_path`), **avatar template** PLY (`avatar.template.path`), canonical SMPL-X mesh (`avatar.template.cano_mesh_path`). Template `mode`: `default` | `generate` | `test`.
+**Model assets** (paths in config): ResNet weights (`backbone.resnet50_weights_path`), **avatar template** PLY (`avatar_template.path`), canonical SMPL-X mesh (`avatar_template.cano_mesh_path`). Template `mode`: `default` | `generate` | `test` | `anim`.
 
 **Preprocessing:** `python -m src.data.preprocess_thuman` renders THuman 2.0 into the layout above (see script for `DATA_ROOT` and camera output).
 

@@ -8,6 +8,13 @@ from avatar_utils.ply_loader import load_ply, save_ply, matrix_to_quaternion
 from avatar_utils.config import get as get_cfg
 
 
+def _cfg_req(path: str):
+    v = get_cfg(path)
+    if v is None:
+        raise ValueError(f"Missing required config key: {path}")
+    return v
+
+
 class AvatarTemplate:
     """
     AvatarTemplate class.
@@ -36,19 +43,19 @@ class AvatarTemplate:
     def __init__(self, avatar_path=None, cano_mesh_path=None, k_num_gaussians=None):
         # Read defaults from config if not provided
         self.cano_mesh_path = (
-            cano_mesh_path
+            str(cano_mesh_path)
             if cano_mesh_path is not None
-            else get_cfg("avatar.template.cano_mesh_path", "models/smplx/smplx_uv.obj")
+            else str(_cfg_req("avatar_template.cano_mesh_path"))
         )
         self.avatar_path = (
-            avatar_path
+            str(avatar_path)
             if avatar_path is not None
-            else get_cfg("avatar.template.path", "./models/avatar_template.ply")
+            else str(_cfg_req("avatar_template.path"))
         )
         self.k_num_gaussians = int(
             k_num_gaussians
             if k_num_gaussians is not None
-            else get_cfg("avatar.template.k_num_gaussians", 4)
+            else int(_cfg_req("avatar_template.k_num_gaussians"))
         )
         self._barycentric_coords = self.get_barycentric_coords()
         self._avatar = self.load_avatar_template(mode="default")
@@ -80,7 +87,7 @@ class AvatarTemplate:
 
         # Decide mode flag
         if mode is None:
-            mode = get_cfg("avatar.template.mode", "default")
+            mode = str(_cfg_req("avatar_template.mode"))
         if not os.path.exists(self.avatar_path):
             mode = "generate"
 
@@ -112,9 +119,7 @@ class AvatarTemplate:
             print(
                 "Reloading avatar template in anim mode for animated mesh visualization..."
             )
-            mesh_path = get_cfg(
-                "avatar.template.anim_mesh_path", "tmp/output_smplx_mesh.ply"
-            )
+            mesh_path = str(_cfg_req("avatar_template.anim_mesh_path"))
             assert os.path.exists(
                 mesh_path
             ), f"Animated mesh file not found: {mesh_path}"
@@ -237,15 +242,7 @@ class AvatarTemplate:
 
     def get_barycentric_coords(self):
         if not hasattr(self, "_barycentric_coords"):
-            B4_list = get_cfg(
-                "avatar.template.barycentric_coords",
-                [
-                    (0.6, 0.2, 0.2),
-                    (0.2, 0.6, 0.2),
-                    (0.2, 0.2, 0.6),
-                    (1 / 3, 1 / 3, 1 / 3),
-                ],
-            )
+            B4_list = _cfg_req("avatar_template.barycentric_coords")
             B4_list = [[float(x) for x in row] for row in B4_list]
             self._barycentric_coords = torch.tensor(B4_list, dtype=torch.float32)
         return self._barycentric_coords

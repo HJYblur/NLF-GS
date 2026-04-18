@@ -25,7 +25,7 @@ def load_config(path: Optional[str] = None) -> Dict[str, Any]:
         _CONFIG = {}
         _LOADED = True
         # TODO[run-pipeline]: Raise or log a clear error when config cannot be loaded;
-        #   and validate presence of required sections (data, train, avatar.template).
+        #   and validate presence of required sections (data, train, backbone, avatar_template).
     return _CONFIG
 
 
