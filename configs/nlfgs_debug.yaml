@@ -8,7 +8,6 @@ data:
   root: processed
   smplx_root: data/THuman_2.0_smplx_paras
   num_views: 4
-  template_path: models/avatar_template.ply
   image_size: [512, 512] # [W, H]
 
 camera:
@@ -28,7 +27,6 @@ nlf:
   latent_dim: 512
 
 backbone:
-  use_resnet_fpn: true
   fpn_levels: ["p2", "p3", "p4"]
   fpn_out_channels: 256
   resnet50_weights_path: models/torchvision/resnet50-0676ba61.pth
@@ -82,7 +80,6 @@ train:
   lr: 0.0001
   bb_lr_mult: 0.1 # backbone lr = lr * bb_lr_mult (try 0.01 if unstable)
   wd: 0.01
-  weight_decay: 0.01 # backward-compatible alias for wd
   betas: [0.9, 0.99]
   eps: 1.0e-8
   warmup_ratio: 0.05 # 5-10% warmup is recommended
@@ -107,8 +104,8 @@ train:
   test_renders: [7, 100, 350] # subject IDs whose renders are logged online
 
 analysis:
-  dump_local_feats: false # set true to save local_feats and collision_data tensors
-  dump_collision_data: true # also write collision_data_<subject>.pt (centers2d + sizes)
+  dump_local_feats: false # set true to save local_feats / fusion_data tensors
+  dump_collision_data: true # when dump_local_feats: also write collision_data_<subject>.pt
   dump_subject: "0007" # subject ID to dump; null means dump every subject
   dump_dir: tmp/analysis # directory where .pt files are written
 

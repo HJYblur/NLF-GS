@@ -9,6 +9,7 @@ Enable by setting ``train.profile_gpu: True`` in your config YAML.
 
 import torch
 import lightning as L
+from lightning.pytorch.utilities.rank_zero import rank_zero_info
 
 
 def _gpu_mem_mb() -> dict:
@@ -24,8 +25,11 @@ def _gpu_mem_mb() -> dict:
 
 
 def _log_mem(tag: str) -> None:
-    _ = tag
-    _ = _gpu_mem_mb()
+    stats = _gpu_mem_mb()
+    if not stats:
+        return
+    parts = " ".join(f"{k}={v:.2f}" for k, v in stats.items())
+    rank_zero_info(f"[GpuMemoryProfiler] {tag}: {parts}")
 
 
 class GpuMemoryProfilerCallback(L.Callback):

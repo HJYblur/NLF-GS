@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from avatar_utils.config import load_config
+from avatar_utils.config import get_config
 
 
 class GaussianDecoder(nn.Module):
@@ -18,7 +18,7 @@ class GaussianDecoder(nn.Module):
 
     def __init__(self, debug = False):
         super().__init__()
-        cfg = load_config() or {}
+        cfg = get_config() or {}
         dec_cfg = cfg.get("decoder", {})
 
         self.debug = debug
@@ -99,7 +99,7 @@ class GaussianDecoder(nn.Module):
         """
 
         # Support chunked decoding over the Gaussian dimension to reduce peak VRAM
-        cfg = load_config() or {}
+        cfg = get_config() or {}
         dec_cfg = cfg.get("decoder", {})
         chunk_size = int(dec_cfg.get("chunk_size", 8192))
 

@@ -6,9 +6,7 @@ from gsplat import rasterization
 
 from avatar_utils.camera import load_camera_mapping
 from avatar_utils.config import get_config
-
-# Canonical multi-view order (same as dataset / training; keep in sync with data.datasets.VIEW_ORDER)
-VIEW_ORDER = ("front", "back", "left", "right")
+from data.datasets import VIEW_ORDER
 
 
 class GsplatRenderer:
@@ -84,10 +82,9 @@ class GsplatRenderer:
         if save_folder_path is not None:
             from torchvision.io import write_png
             from torchvision.transforms.functional import convert_image_dtype
-            from pathlib import Path as _Path
 
             # Ensure the output directory exists
-            out_dir = _Path(save_folder_path)
+            out_dir = Path(save_folder_path)
             out_dir.mkdir(parents=True, exist_ok=True)
 
             # Normalize view_name to a list

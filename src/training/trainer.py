@@ -90,6 +90,7 @@ class NlfGaussianModel(L.LightningModule):
         # Feature-dump settings for PCA analysis
         analysis_cfg = get_config().get("analysis", {})
         self._dump_local_feats = bool(analysis_cfg.get("dump_local_feats", False))
+        self._dump_collision_data = bool(analysis_cfg.get("dump_collision_data", False))
         self._dump_subject = analysis_cfg.get("dump_subject", None)  # None → dump all
         self._dump_dir = Path(str(analysis_cfg.get("dump_dir", "output/analysis")))
             
@@ -129,9 +130,7 @@ class NlfGaussianModel(L.LightningModule):
             # feature maps on GPU simultaneously (saves ~(B-1)/B of backbone VRAM).
             feat_list = []
             for v_idx in range(B):
-                f_v = self.backbone.extract_feature_map(
-                    image=img_float[v_idx : v_idx + 1], use_half=True
-                )
+                f_v = self.backbone.extract_feature_map(img_float[v_idx : v_idx + 1])
                 feat_list.append(f_v)
             if isinstance(feat_list[0], dict):
                 feats = {
@@ -336,6 +335,7 @@ class NlfGaussianModel(L.LightningModule):
 
         Enabled only when ``analysis.dump_local_feats: true`` in the config.
         If ``analysis.dump_subject`` is set, only that subject is dumped.
+        When ``analysis.dump_collision_data`` is true, also writes ``collision_data_<subject>.pt``.
         """
         if not self._dump_local_feats:
             return
@@ -359,18 +359,18 @@ class NlfGaussianModel(L.LightningModule):
             fusion_path,
         )
 
-        # Companion file for projection-collision analysis
-        H, W = int(img_size[0]), int(img_size[1])
-        Hf, Wf = int(feat_size[-2]), int(feat_size[-1])
-        collision_path = self._dump_dir / f"collision_data_{subject}.pt"
-        torch.save(
-            {
-                "centers2d": centers2d.detach().cpu(),  # (B, N, 2) pixel coords
-                "img_size": (H, W),
-                "feat_size": (Hf, Wf),
-            },
-            collision_path,
-        )
+        if self._dump_collision_data:
+            H, W = int(img_size[0]), int(img_size[1])
+            Hf, Wf = int(feat_size[-2]), int(feat_size[-1])
+            collision_path = self._dump_dir / f"collision_data_{subject}.pt"
+            torch.save(
+                {
+                    "centers2d": centers2d.detach().cpu(),  # (B, N, 2) pixel coords
+                    "img_size": (H, W),
+                    "feat_size": (Hf, Wf),
+                },
+                collision_path,
+            )
 
     def freeze_encoder(self):
         for p in self.identity_encoder.parameters():

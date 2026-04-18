@@ -11,7 +11,6 @@ data:
   root: processed_test
   smplx_root: data/THuman_2.0_smplx_paras
   num_views: 4
-  template_path: models/avatar_template.ply
   image_size: [1024, 1024]
 
 camera:
@@ -25,7 +24,6 @@ camera:
     right: [1.0, 0.0, 0.0]
 
 backbone:
-  use_resnet_fpn: true
   fpn_levels: ["p2", "p3", "p4"]
   fpn_out_channels: 256
   resnet50_weights_path: models/torchvision/resnet50-0676ba61.pth

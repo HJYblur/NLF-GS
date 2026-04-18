@@ -8,16 +8,6 @@ from avatar_utils.ply_loader import load_ply, save_ply, matrix_to_quaternion
 from avatar_utils.config import get as get_cfg
 
 
-class GaussianData:
-    def __init__(self, idx, xyz, rots, scales, opacities, shs):
-        self.xyz = xyz
-        self.rots = rots
-        self.scales = scales
-        self.opacities = opacities
-        self.shs = shs
-        self.parent = idx
-
-
 class AvatarTemplate:
     """
     AvatarTemplate class.
@@ -43,7 +33,7 @@ class AvatarTemplate:
     - Generation is intended to be done once; subsequent uses load the cached file.
     """
 
-    def __init__(self, avatar_path=None, cano_mesh_path=None, _k_num_gaussians=None):
+    def __init__(self, avatar_path=None, cano_mesh_path=None, k_num_gaussians=None):
         # Read defaults from config if not provided
         self.cano_mesh_path = (
             cano_mesh_path
@@ -55,10 +45,10 @@ class AvatarTemplate:
             if avatar_path is not None
             else get_cfg("avatar.template.path", "./models/avatar_template.ply")
         )
-        self._k_num_gaussians = int(
-            _k_num_gaussians
-            if _k_num_gaussians is not None
-            else get_cfg("avatar.template._k_num_gaussians", 4)
+        self.k_num_gaussians = int(
+            k_num_gaussians
+            if k_num_gaussians is not None
+            else get_cfg("avatar.template.k_num_gaussians", 4)
         )
         self._barycentric_coords = self.get_barycentric_coords()
         self._avatar = self.load_avatar_template(mode="default")
@@ -167,12 +157,12 @@ class AvatarTemplate:
             all_scales.append(scales)
             all_rots.append(rots)
             # Record the 3 vertex indices that define the face as parents for each gaussian
-            # Shape: (_k_num_gaussians, 3)
+            # Shape: (k_num_gaussians, 3)
             parent_triplet = torch.tensor(
                 [int(face[0]), int(face[1]), int(face[2])], dtype=torch.int32
             )
             parents_for_gaussians = parent_triplet.unsqueeze(0).repeat(
-                self._k_num_gaussians, 1
+                self.k_num_gaussians, 1
             )
             all_parents.append(parents_for_gaussians)
 
@@ -199,7 +189,7 @@ class AvatarTemplate:
         return data
 
     def generate_gaussians_per_face(self, v0, v1, v2):
-        num_gaussians = self._k_num_gaussians
+        num_gaussians = self.k_num_gaussians
 
         v0_t = torch.as_tensor(v0, dtype=torch.float32)
         v1_t = torch.as_tensor(v1, dtype=torch.float32)
