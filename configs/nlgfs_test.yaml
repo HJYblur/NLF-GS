@@ -1,0 +1,101 @@
+# Inference / test config for NLF-GS (single subject, 4 views per run).
+# Default test folder layout matches training `processed/` but under `data/processed_test/<subject>/`.
+
+sys:
+  device: cuda
+  matmul_precision: medium
+  debug: false
+
+data:
+  raw: data
+  root: processed_test
+  smplx_root: data/THuman_2.0_smplx_paras
+  num_views: 4
+  template_path: models/avatar_template.ply
+  image_size: [1024, 1024]
+
+camera:
+  distance: 1.5
+  yfov_deg: 45.0
+  up: [0.0, 1.0, 0.0]
+  viewpoints:
+    front: [0.0, 0.0, 1.0]
+    back: [0.0, 0.0, -1.0]
+    left: [-1.0, 0.0, 0.0]
+    right: [1.0, 0.0, 0.0]
+
+backbone:
+  use_resnet_fpn: true
+  fpn_levels: ["p2", "p3", "p4"]
+  fpn_out_channels: 256
+  resnet50_weights_path: models/torchvision/resnet50-0676ba61.pth
+
+model:
+  local_feature_dim: 768
+
+identity_encoder:
+  latent_dim: 64
+  use_flag: false
+
+avatar:
+  template:
+    mode: default
+    path: models/avatar_template.ply
+    cano_mesh_path: models/smplx/smplx_uv.obj
+    anim_mesh_path: tmp/output_smplx_mesh.ply
+    k_num_gaussians: 4
+    barycentric_coords:
+      - [0.6, 0.2, 0.2]
+      - [0.2, 0.6, 0.2]
+      - [0.2, 0.2, 0.6]
+      - [0.3333333333, 0.3333333333, 0.3333333333]
+
+fusion:
+  mode: learned
+  hidden_dim: 256
+
+decoder:
+  in_dim: 768
+  hidden: 256
+  sh_degree: 1
+  out_dim: 23
+  scale_min: 1.0e-6
+  scale_max: 4.0e-3
+  alpha_min: 0.0
+  alpha_max: 1.0
+  rot_min: -1.0
+  rot_max: 1.0
+  sh_min: -1.0
+  sh_max: 1.0
+  offset_scale: 0.01
+
+train:
+  accelerator: cuda
+  train_decoder_only: false
+  precision: 16-mixed
+  batch_size: 4
+  num_workers: 0
+  epochs: 1
+  val_ratio: 0.0
+
+analysis:
+  dump_local_feats: false
+  dump_collision_data: false
+
+render:
+  save_path: output
+  log_online: false
+
+inference:
+  # Default checkpoint (repo-root relative when running from avatar-benchmark/)
+  checkpoint: models/checkpoints/epoch=49-step=22500.ckpt
+  # subject_params: smplx_root/<subject>/smplx_param.pkl or mesh_smplx.obj
+  # canonical_mesh: vertices from avatar.template.cano_mesh_path (same topology as avatar_template.ply)
+  smplx_source: subject_params
+  output_dir: output
+  # Settings for saving PLY files
+  ply_log_scales: false
+  ply_include_parent: false
+
+  save_pt: true
+  canonical_views_subdir: canonical_views
