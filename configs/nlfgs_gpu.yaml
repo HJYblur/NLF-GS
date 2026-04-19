@@ -1,16 +1,21 @@
+# Section order (top → bottom): runtime → data & sensing → model stack → train loop → logging.
+# Keys are stable for code; reordering sections does not change behavior.
+
+# --- Runtime / process ---
 sys:
   device: cuda # 'cpu', 'cuda', 'cuda:0', etc.
   matmul_precision: medium # 'high', 'medium', 'low'
   debug: False
 
+# --- Dataset & resolution (single source of truth for image_size) ---
 data:
   raw: data
   root: processed
   smplx_root: data/THuman_2.0_smplx_paras
   num_views: 4
-  template_path: models/avatar_template.ply
   image_size: [1024,1024] # [W, H]
 
+# --- Canonical cameras (intrinsics/extrinsics-style; resolution lives under data) ---
 camera:
   distance: 1.5 # Camera distance from origin
   yfov_deg: 45.0 # Vertical field of view in degrees
@@ -21,35 +26,29 @@ camera:
     left: [-1.0, 0.0, 0.0]
     right: [1.0, 0.0, 0.0]
 
+# --- Perception stack (image → features → Gaussians) ---
 backbone:
-  use_resnet_fpn: true
   fpn_levels: ["p2", "p3", "p4"]
   fpn_out_channels: 256
-  resnet50_weights_path: models/torchvision/resnet50-0676ba61.pth
-
-model:
+  # Concatenated width from ``feature_sample_multiscale`` (typically len(fpn_levels) * fpn_out_channels).
   local_feature_dim: 768
-
-identity_encoder:
-  latent_dim: 64
-  use_flag: False
-
-avatar:
-  template:
-    mode: default # options: default | generate | test
-    path: models/avatar_template.ply
-    cano_mesh_path: models/smplx/smplx_uv.obj
-    anim_mesh_path: tmp/output_smplx_mesh.ply
-    k_num_gaussians: 4
-    barycentric_coords:
-      - [0.6, 0.2, 0.2]
-      - [0.2, 0.6, 0.2]
-      - [0.2, 0.2, 0.6]
-      - [0.3333333333, 0.3333333333, 0.3333333333]
+  resnet50_weights_path: models/torchvision/resnet50-0676ba61.pth
 
 fusion:
   mode: learned # fixed: normalize geometric view_weights only; learned: MLP + softmax over views
   hidden_dim: 256 # MLP width (defaults to decoder.hidden if omitted)
+
+avatar_template:
+  mode: default # default | generate | test | anim
+  path: models/avatar_template.ply
+  cano_mesh_path: models/smplx/smplx_uv.obj
+  anim_mesh_path: tmp/output_smplx_mesh.ply
+  k_num_gaussians: 4
+  barycentric_coords:
+    - [0.6, 0.2, 0.2]
+    - [0.2, 0.6, 0.2]
+    - [0.2, 0.2, 0.6]
+    - [0.3333333333, 0.3333333333, 0.3333333333]
 
 decoder:
   in_dim: 768 # local feature dim
@@ -66,23 +65,25 @@ decoder:
   sh_max: 1.0 # upper bound for SH coefficients
   offset_scale: 0.01 # hard cap factor for local-surface offsets
 
+# --- Training loop (Lightning + optim + losses + dev/monitoring) ---
 train:
-  # Base settings
+  # Run
   accelerator: cuda
-  train_decoder_only: false # true: freeze backbone and train decoder only; false: also train ResNet-FPN
   precision: 16-mixed # Use AMP (fp16) to halve VRAM on activations & weights
   batch_size: 4 # Must match num_views (4 views fused per subject)
   num_workers: 2
   epochs: 50
   val_ratio: 0.1
+  train_decoder_only: false # true: freeze backbone and train decoder only; false: also train ResNet-FPN
 
-  # Optimizer & scheduler settings
+  # Optimizer
   lr: 0.0001
-  bb_lr_mult: 0.1 # backbone lr = lr * bb_lr_mult (try 0.01 if unstable)
   wd: 0.01
-  weight_decay: 0.01 # backward-compatible alias for wd
   betas: [0.9, 0.99]
   eps: 1.0e-8
+  bb_lr_mult: 0.1 # backbone lr = lr * bb_lr_mult (try 0.01 if unstable)
+
+  # LR schedule
   warmup_ratio: 0.05 # 5-10% warmup is recommended
   min_lr_ratio: 0.05 # cosine floor; keep > 0 to avoid stalling
   scheduler: cosine
@@ -99,21 +100,13 @@ train:
   weight_opacity_reg: 0.0
   weight_multiview_consistency: 0.0
 
-  # GPU memory profiling (logs peak VRAM per section)
-  profile_gpu: False
-  log_train_losses: true
-  log_val_losses: true
-  tracked_losses: null # null logs all losses; set list like ["loss", "l1"] to filter
-  test_renders: [7, 10, 12, 15, 100, 350] # subject IDs whose renders are logged online
+  # Monitoring / logging
+  profile_gpu: False # peak VRAM per section
+  test_renders: [7, 10, 12, 15, 100, 350] # WandB RGB: subject IDs, or [-1] for all
 
-analysis:
-  dump_local_feats: false # set true to save local_feats and collision_data tensors
-  dump_collision_data: true # also write collision_data_<subject>.pt (centers2d + sizes)
-  dump_subject: "0007" # subject ID to dump; null means dump every subject
-  dump_dir: tmp/analysis # directory where .pt files are written
-
+# --- Rasterization & experiment logging ---
 render:
-  save_path: output # kept for backward compatibility; renders are logged online by default
+  save_path: output # backward compatibility; renders logged online by default
   view_chunk_size: 1
   log_online: true
   log_stages: ["train", "val"]

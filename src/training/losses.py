@@ -1,13 +1,13 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from avatar_utils.config import load_config
+from avatar_utils.config import get_config
 
 
 class LossFunctions(nn.Module):
     def __init__(self, weight_rgb=None):
         super().__init__()
-        train_cfg = load_config().get("train", {})
+        train_cfg = get_config().get("train", {})
         self.weight_rgb = (
             weight_rgb if weight_rgb is not None else float(train_cfg.get("weight_rgb", 1.0))
         )

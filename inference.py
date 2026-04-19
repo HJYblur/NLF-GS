@@ -14,16 +14,18 @@ import torch
 sys.path.append(str(Path(__file__).parent / "src"))
 
 from src.avatar_utils.config import load_config
+from src.training.nlfgs_builder import (
+    apply_matmul_precision_for_device,
+    build_nlf_gaussian_model,
+    device_from_cfg,
+    gsplat_renderer_if_cuda,
+)
 from src.avatar_utils.ply_loader import reconstruct_gaussian_avatar_as_ply
 from src.avatar_utils.smplx_loader import load_smplx_coord3d, vertices_3d_to_2d
 from src.avatar_utils.camera import load_camera_mapping
 from src.data.datasets import VIEW_ORDER, AvatarDataset
-from src.decoder.gaussian_decoder import GaussianDecoder
 from src.encoder.avatar_template import AvatarTemplate
-from src.encoder.feature_extractor import FeatureExtractor
-from src.encoder.identity_encoder import IdentityEncoder
-from src.render.gaussian_renderer import GsplatRenderer
-from src.training.trainer import NlfGaussianModel
+from src.training.nlfgs import NlfGaussianModel
 
 
 def _find_subject_index(ds: AvatarDataset, subject: str) -> int:
@@ -136,32 +138,7 @@ def _vertices3d_for_inference(cfg: dict, subject: str) -> torch.Tensor:
     raise FileNotFoundError(
         f"SMPL-X params not found for subject {subject!r} under {smplx_root} "
         f"(expected smplx_param.pkl or mesh_smplx.obj). "
-        f"Set inference.smplx_source: canonical_mesh to use avatar.template.cano_mesh_path instead."
-    )
-
-
-def _build_model(cfg: dict, device: torch.device) -> NlfGaussianModel:
-    backbone_cfg = cfg.get("backbone", {})
-    train_cfg = cfg.get("train", {})
-    train_decoder_only = bool(train_cfg.get("train_decoder_only", True))
-    fpn_levels = tuple(backbone_cfg.get("fpn_levels", ["p2", "p3", "p4"]))
-    backbone = FeatureExtractor(
-        fpn_levels=fpn_levels,
-        resnet_weights_path=backbone_cfg.get("resnet50_weights_path"),
-        freeze_resnet_fpn=train_decoder_only,
-    )
-    fpn_out_channels = int(backbone_cfg.get("fpn_out_channels", 256))
-    c_local = fpn_out_channels * len(fpn_levels)
-    id_latent_dim = int(cfg["identity_encoder"].get("latent_dim", 64))
-    id_encoder = IdentityEncoder(backbone_feat_dim=c_local, latent_dim=id_latent_dim)
-    decoder = GaussianDecoder()
-    renderer = GsplatRenderer() if device.type == "cuda" else None
-    return NlfGaussianModel(
-        backbone_adapter=backbone,
-        identity_encoder=id_encoder,
-        decoder=decoder,
-        renderer=renderer,
-        train_decoder_only=train_decoder_only,
+        f"Set inference.smplx_source: canonical_mesh to use avatar_template.cano_mesh_path instead."
     )
 
 
@@ -207,7 +184,7 @@ def run_inference(
     else:
         vertices2d = torch.empty(B, 0, 2, device=device, dtype=torch.float32)
 
-    model = _build_model(cfg, device)
+    model = build_nlf_gaussian_model(cfg, device)
     _load_checkpoint(model, checkpoint, device)
 
     H, W = img_float.shape[-2:]
@@ -215,9 +192,7 @@ def run_inference(
     with grad_ctx:
         feat_list = []
         for v_idx in range(B):
-            f_v = model.backbone.extract_feature_map(
-                image=img_float[v_idx : v_idx + 1], use_half=True
-            )
+            f_v = model.backbone.extract_feature_map(img_float[v_idx : v_idx + 1])
             feat_list.append(f_v)
         if isinstance(feat_list[0], dict):
             feats = {
@@ -226,16 +201,6 @@ def run_inference(
             }
         else:
             feats = torch.cat(feat_list, dim=0)
-
-        if isinstance(feats, dict):
-            feat_for_id = next(iter(feats.values()))
-        else:
-            feat_for_id = feats
-
-        if model.use_identity_encoder:
-            z_id = model.identity_encoder(feature_map=feat_for_id)
-        else:
-            z_id = None
 
         local_feats, view_weights, gaussian_3d, _centers2d = (
             model.avatar_estimator.feature_sample_with_visibility(
@@ -262,13 +227,11 @@ def run_inference(
                 local_feats = (local_feats * weights.unsqueeze(-1)).sum(dim=0, keepdim=True)
             gaussian_3d_decode = gaussian_3d[0:1]
             local_frames_decode = local_frames[0:1]
-            z_id_decode = None if z_id is None else z_id.mean(dim=0, keepdim=True)
         else:
             gaussian_3d_decode = gaussian_3d
             local_frames_decode = local_frames
-            z_id_decode = z_id
 
-        gaussian_params_fused = model.decoder(local_feats, z_id_decode)
+        gaussian_params_fused = model.decoder(local_feats)
         gaussian_3d_fused = gaussian_3d_decode[0]
         offset_local = gaussian_params_fused.get("offset", None)
         if offset_local is not None:
@@ -310,15 +273,8 @@ def main():
 
     os.environ["NLFGS_CONFIG"] = args.config
     cfg = load_config(args.config)
-    device_str = cfg.get("sys", {}).get("device", "cpu")
-    device = torch.device(device_str)
-
-    try:
-        if device.type == "cuda":
-            matmul_prec = cfg.get("sys", {}).get("matmul_precision")
-            torch.set_float32_matmul_precision(matmul_prec or "high")
-    except Exception:
-        pass
+    device = device_from_cfg(cfg)
+    apply_matmul_precision_for_device(cfg, device)
 
     inf_cfg = cfg.get("inference", {})
     ckpt_arg = args.checkpoint or inf_cfg.get("checkpoint")
@@ -332,7 +288,7 @@ def main():
         f"{subjects[0]} -> {subjects[-1]}"
     )
 
-    renderer = GsplatRenderer() if device.type == "cuda" else None
+    renderer = gsplat_renderer_if_cuda(device)
     train_prefix = _inference_save_prefix(inf_cfg)
 
     out_root = Path(str(inf_cfg.get("output_dir", cfg.get("render", {}).get("save_path", "output"))))

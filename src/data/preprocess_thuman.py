@@ -17,7 +17,6 @@ from PIL import Image
 from avatar_utils.camera import look_at_viewmatrix
 from avatar_utils.config import get_config
 
-import os, sys
 
 def configure_pyopengl_platform(prefer_gpu=True):
     # Don't override user choice

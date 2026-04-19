@@ -26,15 +26,9 @@ class FeatureExtractor(nn.Module):
         self.fpn_extractor.set_frozen(frozen)
 
 
-    def forward(
-        self, image: torch.Tensor, use_half: bool = True, use_heatmap_head: bool = True
-    ):
-        return self.extract_feature_map(
-            image=image, use_half=use_half, use_heatmap_head=use_heatmap_head
-        )
+    def forward(self, image: torch.Tensor):
+        return self.extract_feature_map(image)
 
-    def extract_feature_map(
-        self, image: torch.Tensor, use_half: bool = True, use_heatmap_head: bool = True
-    ):
+    def extract_feature_map(self, image: torch.Tensor):
         """Return either a single feature map or an OrderedDict of FPN maps."""
         return self.fpn_extractor(image.float())
