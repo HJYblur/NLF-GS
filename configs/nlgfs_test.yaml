@@ -93,3 +93,7 @@ inference:
 
   save_pt: true
   canonical_views_subdir: canonical_views
+
+# --- Metrics (evaluation) ---
+metrics:
+  lpips_cache_dir: models/lpips

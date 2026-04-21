@@ -1,6 +1,9 @@
 ## Minimal requirements for avatar-benchmark
 numpy>=1.21.0
 opencv-python>=4.5.0
+imageio>=2.31.0
+scikit-image>=0.20.0
+lpips>=0.1.4
 
 ## Important: install PyTorch first using the official selector
 ## (https://pytorch.org) to match the CUDA / OS configuration, then

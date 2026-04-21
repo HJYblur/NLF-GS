@@ -215,6 +215,7 @@ processed**
 logs/*
 output/*
 wandb/*
+output/
 
 # Ignore model files
 models/nlf_checkpoint/
