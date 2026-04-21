@@ -209,15 +209,19 @@ __marimo__/
 # Project specific
 # Ignore data files
 data/*
-processed**
+processed/
+processed_512/
+processed_512_test/
+processed_test/
 
-# Ignore output files
+
+# Ignore training files
+avatar-training
 logs/*
-output/*
 wandb/*
+output/
 
 # Ignore model files
-models/nlf_checkpoint/
 models/smpl/
 models/smplx/
 
@@ -225,8 +229,8 @@ models/smplx/
 tmp/
 
 # Ignore checkpoints
-checkpoints/
-*.pt
+# checkpoints/
+# *.pt
 
 # Ignore debug files
 debug*
