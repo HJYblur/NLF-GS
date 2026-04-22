@@ -208,7 +208,8 @@ __marimo__/
 
 # Project specific
 # Ignore data files
-data/*
+data/THuman**
+data/anim/*/*.obj
 processed/
 processed_512/
 processed_512_test/
