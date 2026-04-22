@@ -93,6 +93,15 @@ inference:
   save_viewer: false
   canonical_views_subdir: canonical_views
 
+# ``anim.py``: SMPL pose and stills vs self-spin video.
+animation:
+  pose: original # original | tpose | custom
+  custom_pose_path: data/anim/custom_pose.pkl
+  display_mode: video # image (4 cams) | video (yaw spin → anim_video/*.mp4)
+  fps: 30
+  duration_seconds: 2
+  video_subdir: anim_video
+
 # --- Metrics (evaluation) ---
 metrics:
   lpips_cache_dir: models/lpips

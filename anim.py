@@ -1,14 +1,12 @@
 """
-Drive saved NLF-GS Gaussian **appearance** (decoder output from ``inference``) under new SMPL-X poses.
+Drive saved NLF-GS Gaussian **appearance** (inference ``.pt``) under new SMPL-X poses (geometry only).
 
-Loads the primary inference ``.pt`` bundle (``save_pt``: linear scales, includes ``offset`` — **not**
-``*_view.pt``, which strips offset). Recomputes only fused 3D centers from new vertices + template
-geometry; then renders the same four canonical cameras.
+**Config** (``animation`` in YAML, e.g. ``configs/nlgfs_test.yaml``):
 
-Example::
-
-    python anim.py --start-subject 0425 --end-subject 0425 --pose tpose \\
-        --config configs/nlgfs_test.yaml
+* ``pose``: ``original`` (pkl as stored) | ``tpose`` (body pose rest) | ``custom`` (``custom_pose_path`` pkl)
+* ``display_mode``: ``image`` — four canonical views; ``video`` — one view, world-yaw spin, ``.mp4`` in ``video_subdir``
+* ``fps`` / ``duration_seconds`` (legacy: ``frame`` as fps, ``duration`` as seconds)
+* ``video_subdir`` (else ``inference.video_subdir``; default ``anim_video``)
 """
 from __future__ import annotations
 
@@ -17,6 +15,8 @@ import os
 import sys
 from pathlib import Path
 
+import imageio
+import numpy
 import torch
 
 sys.path.append(str(Path(__file__).parent / "src"))
@@ -24,7 +24,13 @@ sys.path.append(str(Path(__file__).parent / "src"))
 from src.avatar_utils.anim_replay import gaussian_params_for_render, replay_fused_gaussian_means
 from src.avatar_utils.config import load_config
 from src.avatar_utils.ply_loader import reconstruct_gaussian_avatar_as_ply
-from src.avatar_utils.smplx_loader import load_smplx_coord3d, load_smplx_coord3d_tpose
+from src.avatar_utils.smplx_loader import (
+    copy_smplx_params_spin_global_yaw,
+    copy_smplx_params_tpose_rest,
+    frame_count_for_duration_seconds,
+    load_smplx_params_dict,
+    vertices_from_smplx_param_dict,
+)
 from src.training.nlfgs_builder import (
     apply_matmul_precision_for_device,
     build_nlf_gaussian_model,
@@ -42,6 +48,60 @@ from inference import (
 
 PLY_SAVE_LOG_SCALES = True
 PLY_SAVE_INCLUDE_PARENT = True
+
+POSE_CHOICES = frozenset({"original", "tpose", "custom"})
+DISPLAY_CHOICES = frozenset({"image", "video"})
+
+
+def _anim_section(cfg: dict) -> dict:
+    a = cfg.get("animation")
+    return a if isinstance(a, dict) else {}
+
+
+def _animation_video_subdir(cfg: dict) -> str:
+    anim = _anim_section(cfg)
+    if anim.get("video_subdir"):
+        return str(anim["video_subdir"])
+    inf = cfg.get("inference") or {}
+    if inf.get("video_subdir"):
+        return str(inf["video_subdir"])
+    return "anim_video"
+
+
+def _animation_pose_display_mode(
+    cfg: dict, pose_arg: str | None, display_arg: str | None
+) -> tuple[str, str]:
+    anim = _anim_section(cfg)
+    pose = (pose_arg or anim.get("pose") or "original")
+    if isinstance(pose, str):
+        pose = pose.strip().lower()
+    if pose not in POSE_CHOICES:
+        raise ValueError(
+            f"pose must be one of {sorted(POSE_CHOICES)} (got {pose!r}; set in animation.pose or --pose)"
+        )
+    display_mode = (display_arg or anim.get("display_mode") or "image")
+    if isinstance(display_mode, str):
+        display_mode = display_mode.strip().lower()
+    if display_mode not in DISPLAY_CHOICES:
+        raise ValueError(
+            f"display_mode must be one of {sorted(DISPLAY_CHOICES)} (got {display_mode!r})"
+        )
+    return pose, display_mode
+
+
+def _animation_fps_duration(cfg: dict) -> tuple[float, float]:
+    anim = _anim_section(cfg)
+    fps = anim.get("fps")
+    if fps is None:
+        fps = anim.get("frame")
+    if fps is None:
+        fps = 30.0
+    duration = anim.get("duration_seconds")
+    if duration is None:
+        duration = anim.get("duration")
+    if duration is None:
+        duration = 2.0
+    return float(fps), float(duration)
 
 
 def _resolve_output_root(cfg: dict) -> Path:
@@ -66,15 +126,29 @@ def _resolve_smplx_pkl(cfg: dict, subject: str) -> Path:
     return smplx_root / subject / "smplx_param.pkl"
 
 
-def _load_vertices_for_pose(cfg: dict, subject: str, pose: str, pkl_override: Path | None) -> torch.Tensor:
+def _base_smplx_params(cfg: dict, subject: str, pose: str, pkl_override: Path | None) -> dict:
+    """Static SMPL-X parameter dict before optional per-frame yaw (``display_mode: video``)."""
+    anim = _anim_section(cfg)
+
+    if pose == "custom":
+        rel = anim.get("custom_pose_path")
+        if not rel:
+            raise ValueError("animation.custom_pose_path is required when animation.pose is 'custom'")
+        pth = _resolve_path(str(rel))
+        if not pth.is_file():
+            raise FileNotFoundError(f"custom pose pickle not found: {pth}")
+        return load_smplx_params_dict(str(pth))
+
     pkl = pkl_override if pkl_override is not None else _resolve_smplx_pkl(cfg, subject)
     if not pkl.is_file():
-        raise FileNotFoundError(f"Need SMPL-X pickle for pose {pose!r}: {pkl}")
+        raise FileNotFoundError(f"Need SMPL-X pickle for subject {subject!r}: {pkl}")
+
+    params = load_smplx_params_dict(str(pkl))
     if pose == "tpose":
-        return load_smplx_coord3d_tpose(str(pkl))
-    if pose == "subject":
-        return load_smplx_coord3d(str(pkl))
-    raise ValueError(f"Unknown --pose {pose!r}; use 'tpose' or 'subject'.")
+        return copy_smplx_params_tpose_rest(params)
+    if pose == "original":
+        return params
+    raise AssertionError(f"unhandled pose {pose!r}")
 
 
 def _template_dict_from_bundle(bundle: dict) -> dict:
@@ -85,9 +159,49 @@ def _template_dict_from_bundle(bundle: dict) -> dict:
     )
 
 
+def _render_spin_video(
+    *,
+    renderer,
+    estimator,
+    gaussian_params: dict,
+    device: torch.device,
+    static_smplx_params: dict,
+    num_frames: int,
+    fps: float,
+    video_path: Path,
+) -> None:
+    frames_rgb: list[numpy.ndarray] = []
+    gp_cpu = {k: v.detach().cpu() if torch.is_tensor(v) else v for k, v in gaussian_params.items()}
+
+    with torch.inference_mode():
+        for i in range(num_frames):
+            p_i = copy_smplx_params_spin_global_yaw(static_smplx_params, i, num_frames)
+            verts_i = vertices_from_smplx_param_dict(p_i)
+            fused = replay_fused_gaussian_means(
+                estimator,
+                verts_i,
+                gp_cpu,
+                device=device,
+            )
+            gp_render = gaussian_params_for_render(gp_cpu, device=device)
+            rgb = renderer.render(
+                fused,
+                gp_render,
+                view_name="front",
+                save_folder_path=None,
+            )
+            frames_rgb.append(
+                (rgb[0].clamp(0, 1).detach().cpu().numpy() * 255.0).astype(numpy.uint8)
+            )
+
+    video_path.parent.mkdir(parents=True, exist_ok=True)
+    imageio.mimsave(str(video_path), frames_rgb, fps=fps)
+    print(f"Saved spin video ({num_frames} frames @ {fps} fps) → {video_path.resolve()}")
+
+
 def main():
     parser = argparse.ArgumentParser(
-        description="Replay Gaussian appearance from inference .pt under new SMPL-X pose (geometry only)."
+        description="Replay Gaussian appearance from inference .pt (anim.yaml: pose + display_mode)."
     )
     parser.add_argument("--start-subject", type=str, required=True)
     parser.add_argument("--end-subject", type=str, required=True)
@@ -101,32 +215,39 @@ def main():
     parser.add_argument(
         "--pose",
         type=str,
-        choices=("tpose", "subject"),
-        default="tpose",
-        help="tpose: zero body/hand global pose from pkl; subject: full pose from smplx_param.pkl.",
+        choices=sorted(POSE_CHOICES),
+        default=None,
+        help="Override animation.pose (original | tpose | custom).",
+    )
+    parser.add_argument(
+        "--display-mode",
+        type=str,
+        choices=sorted(DISPLAY_CHOICES),
+        default=None,
+        help="Override animation.display_mode (image | video).",
     )
     parser.add_argument(
         "--pkl",
         type=str,
         default=None,
-        help="Override path to smplx_param.pkl (default: smplx_root/<subject>/smplx_param.pkl).",
+        help="Override path to subject smplx_param.pkl (original/tpose only).",
     )
     parser.add_argument(
         "--views-subdir",
         type=str,
         default="canonical_views_anim",
-        help="Subfolder under subject output for PNGs.",
+        help="Subfolder under subject output for PNGs when display_mode is image.",
     )
     parser.add_argument(
         "--save-prefix",
         type=str,
         default="anim",
-        help="PNG prefix: {save-prefix}_front.png, etc.",
+        help="PNG / video filename prefix.",
     )
     parser.add_argument(
         "--save-ply",
         action="store_true",
-        help="Also write anim_{subject}.ply (means fused, gaussian_params without offset).",
+        help="Also write anim_{subject}.ply (single static pose; image mode or first frame semantics N/A).",
     )
     args = parser.parse_args()
 
@@ -135,6 +256,8 @@ def main():
     device = device_from_cfg(cfg)
     apply_matmul_precision_for_device(cfg, device)
 
+    pose, display_mode = _animation_pose_display_mode(cfg, args.pose, args.display_mode)
+    fps, duration_s = _animation_fps_duration(cfg)
     pkl_override = Path(args.pkl).resolve() if args.pkl else None
 
     subjects = _subjects_in_range(cfg, args.start_subject, args.end_subject)
@@ -144,6 +267,7 @@ def main():
     model.eval()
     estimator = model.avatar_estimator
     out_root = _resolve_output_root(cfg)
+    video_rel_subdir = _animation_video_subdir(cfg)
 
     for subject in subjects:
         bundle_path = Path(args.bundle) if args.bundle else _default_bundle_path(cfg, subject)
@@ -165,18 +289,44 @@ def main():
         if not isinstance(gaussian_params, dict):
             raise TypeError("bundle['gaussian_params'] must be a dict of tensors.")
 
-        vertices_new = _load_vertices_for_pose(cfg, subject, args.pose, pkl_override)
+        static_params = _base_smplx_params(cfg, subject, pose, pkl_override)
 
+        sub_dir = out_root / subject
+        sub_dir.mkdir(parents=True, exist_ok=True)
+
+        if display_mode == "video":
+            if device.type != "cuda":
+                n = frame_count_for_duration_seconds(fps, duration_s)
+                print(
+                    f"[{subject}] Skipping spin video (CUDA required). Would write {n} frames @ {fps} Hz."
+                )
+                continue
+            assert renderer is not None
+            n_frames = frame_count_for_duration_seconds(fps, duration_s)
+            vid_dir = sub_dir / video_rel_subdir
+            vid_dir.mkdir(parents=True, exist_ok=True)
+            vid_path = vid_dir / f"{args.save_prefix}_{subject}_spin.mp4"
+            _render_spin_video(
+                renderer=renderer,
+                estimator=estimator,
+                gaussian_params=gaussian_params,
+                device=device,
+                static_smplx_params=static_params,
+                num_frames=n_frames,
+                fps=fps,
+                video_path=vid_path,
+            )
+            continue
+
+        # display_mode == image — single static pose, four canonical cameras
+        verts_new = vertices_from_smplx_param_dict(static_params)
         fused = replay_fused_gaussian_means(
             estimator,
-            vertices_new,
+            verts_new,
             gaussian_params,
             device=device,
         )
         gp_render = gaussian_params_for_render(gaussian_params, device=device)
-
-        sub_dir = out_root / subject
-        sub_dir.mkdir(parents=True, exist_ok=True)
 
         if args.save_ply:
             tpl = _template_dict_from_bundle(bundle)
@@ -205,8 +355,7 @@ def main():
             save_prefix=args.save_prefix,
         )
         print(
-            f"[{subject}] Rendered {args.save_prefix}_*.png from {bundle_path.name} "
-            f"under --pose {args.pose} → {views_dir.resolve()}"
+            f"[{subject}] Rendered {args.save_prefix}_*.png (pose={pose}) → {views_dir.resolve()}"
         )
 
 
