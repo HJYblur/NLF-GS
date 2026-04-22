@@ -87,11 +87,10 @@ inference:
   # canonical_mesh: vertices from avatar_template.cano_mesh_path (same topology as avatar_template.path)
   smplx_source: subject_params
   output_dir: output
-  # Settings for saving PLY files
-  ply_log_scales: false
-  ply_include_parent: false
-
+  # ``save_pt``: primary ``.pt`` (same tensors as gsplat: linear scales, offset in params, optional parent).
   save_pt: true
+  # ``save_viewer``: write ``<pt_stem>_view.pt`` and ``<pt_stem>_view.pkl`` (same payload; log scales, no offset).
+  save_viewer: false
   canonical_views_subdir: canonical_views
 
 # --- Metrics (evaluation) ---

@@ -1,10 +1,16 @@
 """
-Run NLF-GS inference for a single subject (4 canonical views) and save PLY / rendered PNGs.
+Run NLF-GS inference for a single subject (4 canonical views) and save PLY, optional ``.pt``
+bundles, and rendered PNGs.
+
+PLY export uses fixed Inria-style settings (log ``scale_*``, ``parent_*`` when the template has parents).
+``save_pt`` writes one primary ``.pt`` matching gsplat inputs. ``save_viewer`` writes matching
+``*_view.pt`` and ``*_view.pkl`` (same payload: log scales, no ``offset`` in ``gaussian_params``).
 """
 from __future__ import annotations
 
 import argparse
 import os
+import pickle
 import sys
 from pathlib import Path
 
@@ -26,6 +32,10 @@ from src.avatar_utils.camera import load_camera_mapping
 from src.data.datasets import VIEW_ORDER, AvatarDataset
 from src.encoder.avatar_template import AvatarTemplate
 from src.training.nlfgs import NlfGaussianModel
+
+# PLY export (fixed): linear ``scales`` in memory, ``save_ply`` writes ``log(scale)``; include ``parent_*``.
+PLY_SAVE_LOG_SCALES = True
+PLY_SAVE_INCLUDE_PARENT = True
 
 
 def _find_subject_index(ds: AvatarDataset, subject: str) -> int:
@@ -108,11 +118,75 @@ def _inference_save_prefix(inf_cfg: dict) -> str:
 
 
 def _inference_pt_filename(inf_cfg: dict, ply_basename: str) -> str:
-    """Tensor bundle name: same stem as PLY unless ``pt_filename`` is set."""
+    """Primary ``.pt`` path: same tensors as ``render_canonical_views`` (``pt_filename`` or PLY stem ``.pt``)."""
     raw = inf_cfg.get("pt_filename")
     if raw is not None and str(raw).strip() != "":
         return str(raw)
     return f"{Path(ply_basename).stem}.pt"
+
+
+def _inference_view_pt_filename(inf_cfg: dict, ply_basename: str) -> str:
+    """``<pt_stem>_view.pt`` (``save_viewer``): log ``scales``, no ``offset`` in ``gaussian_params``."""
+    base = Path(_inference_pt_filename(inf_cfg, ply_basename))
+    stem = base.stem
+    suffix = base.suffix if base.suffix else ".pt"
+    return f"{stem}_view{suffix}"
+
+
+def _inference_view_pkl_filename(inf_cfg: dict, ply_basename: str) -> str:
+    """``<pt_stem>_view.pkl`` (``save_viewer``): same dict as ``_view.pt``, pickled."""
+    base = Path(_inference_pt_filename(inf_cfg, ply_basename))
+    stem = base.stem
+    return f"{stem}_view.pkl"
+
+
+def _gaussian_params_for_view_bundle(
+    gp_cpu: dict[str, torch.Tensor],
+) -> dict[str, torch.Tensor]:
+    """View export: same keys as render ``gaussian_params`` except ``offset`` omitted; ``scales`` are log(linear)."""
+    out: dict[str, torch.Tensor] = {}
+    for k, v in gp_cpu.items():
+        if k == "offset":
+            continue
+        if k == "scales":
+            out[k] = torch.log(torch.clamp(v, min=1e-10))
+        else:
+            out[k] = v
+    return out
+
+
+def _inference_pt_shared_meta(
+    subject: str,
+    vertices3d: torch.Tensor,
+    ckpt_path: Path,
+    config_path: Path,
+) -> dict[str, object]:
+    return {
+        "subject": subject,
+        "vertices3d": vertices3d,
+        "checkpoint": str(ckpt_path.resolve()),
+        "config": str(config_path.resolve()),
+    }
+
+
+def _inference_pt_bundle(
+    *,
+    scales_are_log_space: bool,
+    gaussian_3d: torch.Tensor,
+    gaussian_params: dict[str, torch.Tensor],
+    template_avatar: dict,
+    meta: dict[str, object],
+) -> dict[str, object]:
+    """Same top-level schema for render and view bundles (differs only in tensor values + log flag)."""
+    out: dict[str, object] = {
+        **meta,
+        "scales_are_log_space": scales_are_log_space,
+        "gaussian_3d": gaussian_3d.detach().cpu(),
+        "gaussian_params": gaussian_params,
+    }
+    if "parent" in template_avatar:
+        out["parent"] = template_avatar["parent"].detach().cpu()
+    return out
 
 
 def _vertices3d_for_inference(cfg: dict, subject: str) -> torch.Tensor:
@@ -304,29 +378,47 @@ def main():
         ply_name = _inference_ply_filename(inf_cfg, subject)
         ply_path = sub_dir / ply_name
         gp_cpu = {k: v.detach().cpu() for k, v in gaussian_params.items()}
+        gp_ply = {k: v for k, v in gp_cpu.items() if k != "offset"}
         reconstruct_gaussian_avatar_as_ply(
             gaussian_3d.detach().cpu(),
-            gp_cpu,
+            gp_ply,
             template_avatar,
             str(ply_path),
-            log_scales=bool(inf_cfg.get("ply_log_scales", True)),
-            include_parent=bool(inf_cfg.get("ply_include_parent", True)),
+            log_scales=PLY_SAVE_LOG_SCALES,
+            include_parent=PLY_SAVE_INCLUDE_PARENT,
         )
 
+        cfg_path = Path(args.config).resolve()
+        pt_meta = _inference_pt_shared_meta(subject, vertices3d, ckpt_path, cfg_path)
+
         if bool(inf_cfg.get("save_pt", False)):
-            save_path = sub_dir / _inference_pt_filename(inf_cfg, ply_name)
-            torch.save(
-                {
-                    "subject": subject,
-                    "gaussian_3d": gaussian_3d.detach().cpu(),
-                    "gaussian_params": gp_cpu,
-                    "vertices3d": vertices3d,
-                    "checkpoint": str(ckpt_path.resolve()),
-                    "config": str(Path(args.config).resolve()),
-                },
-                save_path,
+            render_path = sub_dir / _inference_pt_filename(inf_cfg, ply_name)
+            render_bundle = _inference_pt_bundle(
+                scales_are_log_space=False,
+                gaussian_3d=gaussian_3d,
+                gaussian_params=gp_cpu,
+                template_avatar=template_avatar,
+                meta=pt_meta,
             )
-            print(f"[{subject}] Saved tensor bundle to {save_path.resolve()}")
+            torch.save(render_bundle, render_path)
+            print(f"[{subject}] Saved render tensor bundle to {render_path.resolve()}")
+
+        if bool(inf_cfg.get("save_viewer", False)):
+            gp_view = _gaussian_params_for_view_bundle(gp_cpu)
+            view_bundle = _inference_pt_bundle(
+                scales_are_log_space=True,
+                gaussian_3d=gaussian_3d,
+                gaussian_params=gp_view,
+                template_avatar=template_avatar,
+                meta=pt_meta,
+            )
+            view_pt = sub_dir / _inference_view_pt_filename(inf_cfg, ply_name)
+            view_pkl = sub_dir / _inference_view_pkl_filename(inf_cfg, ply_name)
+            torch.save(view_bundle, view_pt)
+            with open(view_pkl, "wb") as f:
+                pickle.dump(view_bundle, f, protocol=pickle.HIGHEST_PROTOCOL)
+            print(f"[{subject}] Saved view tensor bundle to {view_pt.resolve()}")
+            print(f"[{subject}] Saved view pickle bundle to {view_pkl.resolve()}")
 
         if device.type != "cuda":
             print(
