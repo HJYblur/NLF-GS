@@ -87,17 +87,20 @@ inference:
   # canonical_mesh: vertices from avatar_template.cano_mesh_path (same topology as avatar_template.path)
   smplx_source: subject_params
   output_dir: output
-  # ``save_pt``: primary ``.pt`` (same tensors as gsplat: linear scales, offset in params, optional parent).
-  save_pt: true
-  # ``save_viewer``: write ``<pt_stem>_view.pt`` and ``<pt_stem>_view.pkl`` (same payload; log scales, no offset).
-  save_viewer: false
-  canonical_views_subdir: canonical_views
+  # If false, only ``<subject>.pt`` is written (plus optional ``save_test_ply`` bundles).
+  save_reconstruction: true
+  reconstruction_subdir: reconstruction
+  # PNG basenames: ``{reconstruction_save_prefix}_{view}.png`` (default prefix ``reconstructed``).
+  # PLY: ``reconstructed_{subject}.ply`` unless ``reconstruction_ply_filename`` is set.
+  # ``save_test_ply``: ``<subject>_view.pt`` / ``.pkl`` (log scales, no offset).
+  save_test_ply: false
 
 # ``anim.py``: SMPL pose and stills vs self-spin video.
 animation:
-  pose: original # original | tpose | custom
+  pose: reconstruction # reconstruction | tpose | custom
   custom_pose_path: data/anim/custom_pose.pkl
-  display_mode: video # image (4 cams) | video (yaw spin → anim_video/*.mp4)
+  display_mode: video # image (4 views → reconstruction_subdir) | video (anim_video/*.mp4)
+  reconstruction_subdir: reconstruction
   fps: 30
   duration_seconds: 2
   video_subdir: anim_video

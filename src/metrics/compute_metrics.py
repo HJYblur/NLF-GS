@@ -87,11 +87,11 @@ def _find_mask_path(subject_target_dir, subject, view):
 
 
 def _find_pred_path(subject_preds_dir, view):
-    search_dirs = [subject_preds_dir, os.path.join(subject_preds_dir, "canonical_views")]
+    search_dirs = [subject_preds_dir, os.path.join(subject_preds_dir, "reconstruction")]
     patterns = []
     for search_dir in search_dirs:
         for ext in IMAGE_EXTS:
-            patterns.append(os.path.join(search_dir, f"paramed_{view}{ext}"))
+            patterns.append(os.path.join(search_dir, f"reconstructed_{view}{ext}"))
             patterns.append(os.path.join(search_dir, f"*_{view}{ext}"))
 
     pred_path = _find_first_existing(patterns)

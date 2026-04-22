@@ -3,8 +3,9 @@ Drive saved NLF-GS Gaussian **appearance** (inference ``.pt``) under new SMPL-X 
 
 **Config** (``animation`` in YAML, e.g. ``configs/nlgfs_test.yaml``):
 
-* ``pose``: ``original`` (pkl as stored) | ``tpose`` (body pose rest) | ``custom`` (``custom_pose_path`` pkl)
-* ``display_mode``: ``image`` — four canonical views; ``video`` — one view, world-yaw spin, ``.mp4`` in ``video_subdir``
+* ``pose``: ``reconstruction`` (pkl as stored) | ``tpose`` (body pose rest) | ``custom`` (``custom_pose_path`` pkl)
+* ``display_mode``: ``image`` — four views into ``reconstruction_subdir``; ``video`` — spin, ``{prefix}_{subject}_{pose}.mp4`` in ``video_subdir``
+* ``reconstruction_subdir`` (else ``inference.reconstruction_subdir``; default ``reconstruction``)
 * ``fps`` / ``duration_seconds`` (legacy: ``frame`` as fps, ``duration`` as seconds)
 * ``video_subdir`` (else ``inference.video_subdir``; default ``anim_video``)
 """
@@ -39,7 +40,6 @@ from src.training.nlfgs_builder import (
 )
 
 from inference import (
-    _inference_ply_filename,
     _inference_pt_filename,
     _repo_root,
     _resolve_path,
@@ -49,7 +49,7 @@ from inference import (
 PLY_SAVE_LOG_SCALES = True
 PLY_SAVE_INCLUDE_PARENT = True
 
-POSE_CHOICES = frozenset({"original", "tpose", "custom"})
+POSE_CHOICES = frozenset({"reconstruction", "tpose", "custom"})
 DISPLAY_CHOICES = frozenset({"image", "video"})
 
 
@@ -68,11 +68,23 @@ def _animation_video_subdir(cfg: dict) -> str:
     return "anim_video"
 
 
+def _reconstruction_subdir(cfg: dict) -> str:
+    anim = _anim_section(cfg)
+    if anim.get("reconstruction_subdir"):
+        return str(anim["reconstruction_subdir"])
+    inf = cfg.get("inference") or {}
+    if inf.get("reconstruction_subdir"):
+        return str(inf["reconstruction_subdir"])
+    if inf.get("canonical_views_subdir"):
+        return str(inf["canonical_views_subdir"])
+    return "reconstruction"
+
+
 def _animation_pose_display_mode(
     cfg: dict, pose_arg: str | None, display_arg: str | None
 ) -> tuple[str, str]:
     anim = _anim_section(cfg)
-    pose = (pose_arg or anim.get("pose") or "original")
+    pose = (pose_arg or anim.get("pose") or "reconstruction")
     if isinstance(pose, str):
         pose = pose.strip().lower()
     if pose not in POSE_CHOICES:
@@ -114,8 +126,7 @@ def _resolve_output_root(cfg: dict) -> Path:
 
 def _default_bundle_path(cfg: dict, subject: str) -> Path:
     inf_cfg = cfg.get("inference", {})
-    ply_base = _inference_ply_filename(inf_cfg, subject)
-    pt_name = _inference_pt_filename(inf_cfg, ply_base)
+    pt_name = _inference_pt_filename(inf_cfg, subject)
     return _resolve_output_root(cfg) / subject / pt_name
 
 
@@ -146,7 +157,7 @@ def _base_smplx_params(cfg: dict, subject: str, pose: str, pkl_override: Path | 
     params = load_smplx_params_dict(str(pkl))
     if pose == "tpose":
         return copy_smplx_params_tpose_rest(params)
-    if pose == "original":
+    if pose == "reconstruction":
         return params
     raise AssertionError(f"unhandled pose {pose!r}")
 
@@ -196,7 +207,7 @@ def _render_spin_video(
 
     video_path.parent.mkdir(parents=True, exist_ok=True)
     imageio.mimsave(str(video_path), frames_rgb, fps=fps)
-    print(f"Saved spin video ({num_frames} frames @ {fps} fps) → {video_path.resolve()}")
+    print(f"Saved video ({num_frames} frames @ {fps} fps) → {video_path.resolve()}")
 
 
 def main():
@@ -217,7 +228,7 @@ def main():
         type=str,
         choices=sorted(POSE_CHOICES),
         default=None,
-        help="Override animation.pose (original | tpose | custom).",
+        help="Override animation.pose (reconstruction | tpose | custom).",
     )
     parser.add_argument(
         "--display-mode",
@@ -230,19 +241,19 @@ def main():
         "--pkl",
         type=str,
         default=None,
-        help="Override path to subject smplx_param.pkl (original/tpose only).",
+        help="Override path to subject smplx_param.pkl (reconstruction/tpose only).",
     )
     parser.add_argument(
         "--views-subdir",
         type=str,
-        default="canonical_views_anim",
-        help="Subfolder under subject output for PNGs when display_mode is image.",
+        default=None,
+        help="Override animation / inference reconstruction_subdir for image-mode PNGs.",
     )
     parser.add_argument(
         "--save-prefix",
         type=str,
         default="anim",
-        help="PNG / video filename prefix.",
+        help="Prefix for PNGs; for video, file is {prefix}_{subject}_{pose}.mp4",
     )
     parser.add_argument(
         "--save-ply",
@@ -269,12 +280,14 @@ def main():
     out_root = _resolve_output_root(cfg)
     video_rel_subdir = _animation_video_subdir(cfg)
 
+    views_subdir = args.views_subdir or _reconstruction_subdir(cfg)
+
     for subject in subjects:
         bundle_path = Path(args.bundle) if args.bundle else _default_bundle_path(cfg, subject)
         bundle_path = _resolve_path(bundle_path) if not bundle_path.is_absolute() else bundle_path
         if not bundle_path.is_file():
             raise FileNotFoundError(
-                f"No inference bundle at {bundle_path}. Run inference with inference.save_pt: true, "
+                f"No inference bundle at {bundle_path}. Run ``inference.py`` first (saves {subject}.pt), "
                 f"or pass --bundle to the primary .pt (not *_view.pt — those omit offset)."
             )
 
@@ -305,7 +318,7 @@ def main():
             n_frames = frame_count_for_duration_seconds(fps, duration_s)
             vid_dir = sub_dir / video_rel_subdir
             vid_dir.mkdir(parents=True, exist_ok=True)
-            vid_path = vid_dir / f"{args.save_prefix}_{subject}_spin.mp4"
+            vid_path = vid_dir / f"{args.save_prefix}_{subject}_{pose}.mp4"
             _render_spin_video(
                 renderer=renderer,
                 estimator=estimator,
@@ -347,7 +360,7 @@ def main():
             continue
 
         assert renderer is not None
-        views_dir = sub_dir / args.views_subdir
+        views_dir = sub_dir / views_subdir
         renderer.render_canonical_views(
             fused,
             gp_render,
