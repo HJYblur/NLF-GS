@@ -1,10 +1,15 @@
 """
-Run NLF-GS inference for a single subject (4 canonical views) and save PLY / rendered PNGs.
+Run NLF-GS inference and always save ``{subject}.pt``.
+
+When ``inference.save_reconstruction`` is true, also write ``reconstructed_{subject}.ply`` and four PNGs
+(``reconstructed_<view>.png``) under ``reconstruction_subdir``. ``save_test_ply`` writes
+``<subject>_view.pt`` / ``.pkl`` (log scales, no offset).
 """
 from __future__ import annotations
 
 import argparse
 import os
+import pickle
 import sys
 from pathlib import Path
 
@@ -26,6 +31,10 @@ from src.avatar_utils.camera import load_camera_mapping
 from src.data.datasets import VIEW_ORDER, AvatarDataset
 from src.encoder.avatar_template import AvatarTemplate
 from src.training.nlfgs import NlfGaussianModel
+
+# PLY export (fixed): linear ``scales`` in memory, ``save_ply`` writes ``log(scale)``; include ``parent_*``.
+PLY_SAVE_LOG_SCALES = True
+PLY_SAVE_INCLUDE_PARENT = True
 
 
 def _find_subject_index(ds: AvatarDataset, subject: str) -> int:
@@ -85,34 +94,92 @@ def _resolve_path(p: str | Path) -> Path:
     return _repo_root() / path
 
 
-def _inference_ply_filename(inf_cfg: dict, subject: str) -> str:
-    """Default PLY name from ``smplx_source`` if ``ply_filename`` is unset."""
-    raw = inf_cfg.get("ply_filename")
+def _reconstruction_ply_filename(inf_cfg: dict, subject: str) -> str:
+    """PLY next to ``{subject}.pt`` when ``save_reconstruction`` is true (default ``reconstructed_{subject}.ply``)."""
+    raw = inf_cfg.get("reconstruction_ply_filename")
     if raw is not None and str(raw).strip() != "":
-        return str(raw)
-    src = str(inf_cfg.get("smplx_source", "subject_params")).lower().strip()
-    if src == "subject_params":
-        return f"paramed_{subject}.ply"
-    return f"canonical_{subject}.ply"
+        return str(raw).format(subject=subject)
+    return f"reconstructed_{subject}.ply"
 
 
-def _inference_save_prefix(inf_cfg: dict) -> str:
-    """Default canonical-render PNG prefix from ``smplx_source`` if ``save_prefix`` is unset."""
-    raw = inf_cfg.get("save_prefix")
+def _reconstruction_png_prefix(inf_cfg: dict) -> str:
+    """PNG basename prefix for four views (``reconstructed_front.png``, …)."""
+    raw = inf_cfg.get("reconstruction_save_prefix")
     if raw is not None and str(raw).strip() != "":
-        return str(raw)
-    src = str(inf_cfg.get("smplx_source", "subject_params")).lower().strip()
-    if src == "subject_params":
-        return "paramed"
-    return "canonical"
+        return str(raw).strip()
+    return "reconstructed"
 
 
-def _inference_pt_filename(inf_cfg: dict, ply_basename: str) -> str:
-    """Tensor bundle name: same stem as PLY unless ``pt_filename`` is set."""
+def _inference_pt_filename(inf_cfg: dict, subject: str) -> str:
+    """Primary ``.pt`` filename (default ``{subject}.pt``). Optional ``pt_filename`` may contain ``{subject}``."""
     raw = inf_cfg.get("pt_filename")
     if raw is not None and str(raw).strip() != "":
-        return str(raw)
-    return f"{Path(ply_basename).stem}.pt"
+        return str(raw).format(subject=subject)
+    return f"{subject}.pt"
+
+
+def _inference_view_pt_filename(inf_cfg: dict, subject: str) -> str:
+    """``<subject>_view.pt`` (``save_test_ply``): log ``scales``, no ``offset`` in ``gaussian_params``."""
+    base = Path(_inference_pt_filename(inf_cfg, subject))
+    stem = base.stem
+    suffix = base.suffix if base.suffix else ".pt"
+    return f"{stem}_view{suffix}"
+
+
+def _inference_view_pkl_filename(inf_cfg: dict, subject: str) -> str:
+    """``<subject>_view.pkl`` (``save_test_ply``): same dict as ``_view.pt``, pickled."""
+    base = Path(_inference_pt_filename(inf_cfg, subject))
+    stem = base.stem
+    return f"{stem}_view.pkl"
+
+
+def _gaussian_params_for_view_bundle(
+    gp_cpu: dict[str, torch.Tensor],
+) -> dict[str, torch.Tensor]:
+    """View export: same keys as render ``gaussian_params`` except ``offset`` omitted; ``scales`` are log(linear)."""
+    out: dict[str, torch.Tensor] = {}
+    for k, v in gp_cpu.items():
+        if k == "offset":
+            continue
+        if k == "scales":
+            out[k] = torch.log(torch.clamp(v, min=1e-10))
+        else:
+            out[k] = v
+    return out
+
+
+def _inference_pt_shared_meta(
+    subject: str,
+    vertices3d: torch.Tensor,
+    ckpt_path: Path,
+    config_path: Path,
+) -> dict[str, object]:
+    return {
+        "subject": subject,
+        "vertices3d": vertices3d,
+        "checkpoint": str(ckpt_path.resolve()),
+        "config": str(config_path.resolve()),
+    }
+
+
+def _inference_pt_bundle(
+    *,
+    scales_are_log_space: bool,
+    gaussian_3d: torch.Tensor,
+    gaussian_params: dict[str, torch.Tensor],
+    template_avatar: dict,
+    meta: dict[str, object],
+) -> dict[str, object]:
+    """Same top-level schema for render and view bundles (differs only in tensor values + log flag)."""
+    out: dict[str, object] = {
+        **meta,
+        "scales_are_log_space": scales_are_log_space,
+        "gaussian_3d": gaussian_3d.detach().cpu(),
+        "gaussian_params": gaussian_params,
+    }
+    if "parent" in template_avatar:
+        out["parent"] = template_avatar["parent"].detach().cpu()
+    return out
 
 
 def _vertices3d_for_inference(cfg: dict, subject: str) -> torch.Tensor:
@@ -289,7 +356,6 @@ def main():
     )
 
     renderer = gsplat_renderer_if_cuda(device)
-    train_prefix = _inference_save_prefix(inf_cfg)
 
     out_root = Path(str(inf_cfg.get("output_dir", cfg.get("render", {}).get("save_path", "output"))))
 
@@ -301,54 +367,79 @@ def main():
         sub_dir = out_root / subject
         sub_dir.mkdir(parents=True, exist_ok=True)
 
-        ply_name = _inference_ply_filename(inf_cfg, subject)
-        ply_path = sub_dir / ply_name
         gp_cpu = {k: v.detach().cpu() for k, v in gaussian_params.items()}
-        reconstruct_gaussian_avatar_as_ply(
-            gaussian_3d.detach().cpu(),
-            gp_cpu,
-            template_avatar,
-            str(ply_path),
-            log_scales=bool(inf_cfg.get("ply_log_scales", True)),
-            include_parent=bool(inf_cfg.get("ply_include_parent", True)),
-        )
+        gp_ply = {k: v for k, v in gp_cpu.items() if k != "offset"}
 
-        if bool(inf_cfg.get("save_pt", False)):
-            save_path = sub_dir / _inference_pt_filename(inf_cfg, ply_name)
-            torch.save(
-                {
-                    "subject": subject,
-                    "gaussian_3d": gaussian_3d.detach().cpu(),
-                    "gaussian_params": gp_cpu,
-                    "vertices3d": vertices3d,
-                    "checkpoint": str(ckpt_path.resolve()),
-                    "config": str(Path(args.config).resolve()),
-                },
-                save_path,
+        cfg_path = Path(args.config).resolve()
+        pt_meta = _inference_pt_shared_meta(subject, vertices3d, ckpt_path, cfg_path)
+
+        render_path = sub_dir / _inference_pt_filename(inf_cfg, subject)
+        render_bundle = _inference_pt_bundle(
+            scales_are_log_space=False,
+            gaussian_3d=gaussian_3d,
+            gaussian_params=gp_cpu,
+            template_avatar=template_avatar,
+            meta=pt_meta,
+        )
+        torch.save(render_bundle, render_path)
+        print(f"[{subject}] Saved {render_path.name} → {render_path.resolve()}")
+
+        save_reconstruction = bool(inf_cfg.get("save_reconstruction", False))
+
+        if save_reconstruction:
+            ply_path = sub_dir / _reconstruction_ply_filename(inf_cfg, subject)
+            reconstruct_gaussian_avatar_as_ply(
+                gaussian_3d.detach().cpu(),
+                gp_ply,
+                template_avatar,
+                str(ply_path),
+                log_scales=PLY_SAVE_LOG_SCALES,
+                include_parent=PLY_SAVE_INCLUDE_PARENT,
             )
-            print(f"[{subject}] Saved tensor bundle to {save_path.resolve()}")
+            print(f"[{subject}] Saved {ply_path.name} → {ply_path.resolve()}")
+
+        if bool(inf_cfg.get("save_test_ply", False)):
+            gp_view = _gaussian_params_for_view_bundle(gp_cpu)
+            view_bundle = _inference_pt_bundle(
+                scales_are_log_space=True,
+                gaussian_3d=gaussian_3d,
+                gaussian_params=gp_view,
+                template_avatar=template_avatar,
+                meta=pt_meta,
+            )
+            view_pt = sub_dir / _inference_view_pt_filename(inf_cfg, subject)
+            view_pkl = sub_dir / _inference_view_pkl_filename(inf_cfg, subject)
+            torch.save(view_bundle, view_pt)
+            with open(view_pkl, "wb") as f:
+                pickle.dump(view_bundle, f, protocol=pickle.HIGHEST_PROTOCOL)
+            print(f"[{subject}] Saved view tensor bundle to {view_pt.resolve()}")
+            print(f"[{subject}] Saved view pickle bundle to {view_pkl.resolve()}")
+
+        if not save_reconstruction:
+            continue
 
         if device.type != "cuda":
             print(
-                f"[{subject}] Skipping canonical-view PNG renders (CUDA required for gsplat). "
-                f"Gaussian PLY saved to {ply_path.resolve()}."
+                f"[{subject}] Skipping reconstruction PNGs (CUDA required for gsplat). "
+                f"PLY already saved under {sub_dir.resolve()}."
             )
             continue
 
         gaussian_3d_gpu = gaussian_3d.to(device)
         gaussian_params_gpu = {k: v.to(device) for k, v in gaussian_params.items()}
 
-        views_dir = sub_dir / str(inf_cfg.get("canonical_views_subdir", "canonical_views"))
+        recon_subdir = inf_cfg.get("reconstruction_subdir") or inf_cfg.get("canonical_views_subdir") or "reconstruction"
+        views_dir = sub_dir / str(recon_subdir)
+        recon_prefix = _reconstruction_png_prefix(inf_cfg)
         assert renderer is not None
         renderer.render_canonical_views(
             gaussian_3d_gpu,
             gaussian_params_gpu,
             views_dir,
-            save_prefix=train_prefix,
+            save_prefix=recon_prefix,
         )
 
-        print(f"[{subject}] Saved Gaussian PLY to {ply_path.resolve()}")
-        print(f"[{subject}] Saved {train_prefix}_*.png under {views_dir.resolve()}")
+        print(f"[{subject}] Saved {recon_prefix}_*.png under {views_dir.resolve()}")
 
 
 if __name__ == "__main__":

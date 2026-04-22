@@ -1,6 +1,8 @@
+import copy
 import pickle
 from pathlib import Path
 
+import cv2
 import numpy
 import torch
 import trimesh
@@ -59,7 +61,9 @@ def load_smplx_coord3d(path: str):
     p = Path(path)
 
     if p.suffix == ".pkl":
-        return _load_smplx_coord3d_from_params(str(p))
+        with open(p, "rb") as f:
+            params = pickle.load(f)
+        return _vertices_from_smplx_param_dict(params)
 
     # Legacy / fallback: load directly from mesh file
     mesh = trimesh.load(path)
@@ -67,21 +71,39 @@ def load_smplx_coord3d(path: str):
     return vertices
 
 
-def _load_smplx_coord3d_from_params(
-    pkl_path: str,
+# Zeroed for ``load_smplx_coord3d_tpose`` / ``copy_smplx_params_tpose_rest`` (body/hand; jaw/eyes from pickle).
+_SMPLX_POSE_KEYS = (
+    "global_orient",
+    "body_pose",
+    "left_hand_pose",
+    "right_hand_pose",
+)
+
+
+def load_smplx_params_dict(pkl_path: str) -> dict:
+    """Load raw ``smplx_param.pkl`` dict (numpy arrays)."""
+    with open(Path(pkl_path), "rb") as f:
+        return pickle.load(f)
+
+
+def copy_smplx_params_tpose_rest(params: dict) -> dict:
+    """Deep copy with :data:`_SMPLX_POSE_KEYS` zeroed (same preprocessing as :func:`load_smplx_coord3d_tpose`)."""
+    out = copy.deepcopy(params)
+    for key in _SMPLX_POSE_KEYS:
+        if key not in out:
+            continue
+        arr = numpy.asarray(out[key], dtype=numpy.float32)
+        out[key] = numpy.zeros_like(arr)
+    return out
+
+
+def _vertices_from_smplx_param_dict(
+    params: dict,
     model_path: str = "models/smplx",
     gender: str = "neutral",
     num_pca_comps: int = 12,
 ) -> torch.Tensor:
-    """Generate 3D vertices from SMPLX parameters in standard ordering.
-
-    This guarantees the returned vertex indices are consistent with the
-    standard SMPLX topology (and therefore with the avatar template's
-    ``parents`` tensor).
-    """
-    with open(pkl_path, "rb") as f:
-        params = pickle.load(f)
-
+    """Run SMPL-X forward from a parameter dict (same keys as ``smplx_param.pkl``)."""
     model = _get_smplx_model(model_path, gender, num_pca_comps)
 
     with torch.no_grad():
@@ -99,9 +121,8 @@ def _load_smplx_coord3d_from_params(
 
     verts = output.vertices[0]  # (Nv, 3), standard ordering
 
-    # Apply scale and translation stored alongside the SMPLX params
     if "scale" in params:
-        scale = float(params["scale"].squeeze())
+        scale = float(numpy.asarray(params["scale"]).squeeze())
         verts = verts * scale
     if "translation" in params:
         translation = torch.from_numpy(
@@ -110,6 +131,120 @@ def _load_smplx_coord3d_from_params(
         verts = verts + translation
 
     return verts  # (Nv, 3) float32
+
+
+def vertices_from_smplx_param_dict(
+    params: dict,
+    model_path: str = "models/smplx",
+    gender: str = "neutral",
+    num_pca_comps: int = 12,
+) -> torch.Tensor:
+    """SMPL-X mesh vertices from a parameter dict (same schema as ``smplx_param.pkl``)."""
+    return _vertices_from_smplx_param_dict(
+        params, model_path=model_path, gender=gender, num_pca_comps=num_pca_comps
+    )
+
+
+def load_smplx_coord3d_tpose(
+    pkl_path: str,
+    model_path: str = "models/smplx",
+    gender: str = "neutral",
+    num_pca_comps: int = 12,
+) -> torch.Tensor:
+    """Same as ``load_smplx_coord3d`` for a ``.pkl``, but axis-angle / PCA poses are zeroed (T-pose).
+
+    Shape coefficients (``betas``), ``expression``, and optional ``scale`` / ``translation`` are kept.
+    """
+    params = load_smplx_params_dict(pkl_path)
+    tpose = copy_smplx_params_tpose_rest(params)
+    return _vertices_from_smplx_param_dict(
+        tpose, model_path=model_path, gender=gender, num_pca_comps=num_pca_comps
+    )
+
+
+def frame_count_for_duration_seconds(
+    fps: float,
+    duration_seconds: float = 2.0,
+) -> int:
+    """Number of frames for a clip at ``fps`` (e.g. ``30`` Hz × ``2`` s → ``60`` frames)."""
+    if fps <= 0:
+        raise ValueError(f"fps must be positive, got {fps}")
+    if duration_seconds < 0:
+        raise ValueError(f"duration_seconds must be non-negative, got {duration_seconds}")
+    n = int(round(float(fps) * float(duration_seconds)))
+    return max(1, n)
+
+
+def _rotation_matrix_about_y(angle_rad: float) -> numpy.ndarray:
+    """Right-handed rotation about +Y (SMPL vertical axis), shape ``(3, 3)``."""
+    c = float(numpy.cos(angle_rad))
+    s = float(numpy.sin(angle_rad))
+    return numpy.array([[c, 0.0, s], [0.0, 1.0, 0.0], [-s, 0.0, c]], dtype=numpy.float64)
+
+
+def _axis_angle_to_rotation_matrix(axis_angle: numpy.ndarray) -> numpy.ndarray:
+    rvec = numpy.asarray(axis_angle, dtype=numpy.float64).reshape(3, 1)
+    R, _ = cv2.Rodrigues(rvec)
+    return R
+
+
+def _rotation_matrix_to_axis_angle(R: numpy.ndarray) -> numpy.ndarray:
+    rvec, _ = cv2.Rodrigues(R.astype(numpy.float64))
+    return rvec.reshape(3)
+
+
+def copy_smplx_params_spin_global_yaw(
+    params: dict,
+    frame_index: int,
+    num_frames: int,
+    *,
+    compose_with_original: bool = True,
+    full_turn_rad: float = 2.0 * numpy.pi,
+) -> dict:
+    """Copy SMPL-X params with root rotation adjusted for a **self-spin** (yaw about +Y).
+
+    One full turn is spread across ``num_frames`` (frame ``0`` → angle ``0``, last frame → just
+    below one full revolution). This **composes** a world-space yaw with the existing
+    ``global_orient`` (axis-angle), so the subject keeps their original facing offset while
+    spinning; set ``compose_with_original=False`` for pure yaw ``R_y(angle)`` only.
+
+    Args:
+        params: Loaded ``smplx_param.pkl``-style dict (must contain ``global_orient``).
+        frame_index: ``0 .. num_frames - 1``.
+        num_frames: Total frames in the clip (use :func:`frame_count_for_duration_seconds`).
+        compose_with_original: If True, ``R_new = R_y(angle) @ R_orig``; if False, ``R_new = R_y(angle)``.
+        full_turn_rad: Rotation range over the whole clip (default one full turn).
+
+    Returns:
+        Deep copy of ``params`` with ``global_orient`` updated (same dtype/shape as input).
+    """
+    if num_frames < 1:
+        raise ValueError(f"num_frames must be >= 1, got {num_frames}")
+    if not (0 <= frame_index < num_frames):
+        raise ValueError(
+            f"frame_index must be in [0, num_frames), got frame_index={frame_index}, num_frames={num_frames}"
+        )
+
+    out = copy.deepcopy(params)
+    if "global_orient" not in out:
+        raise KeyError("params must contain 'global_orient'")
+
+    go = numpy.asarray(params["global_orient"], dtype=numpy.float64).reshape(-1)
+    orig_dtype = numpy.asarray(params["global_orient"]).dtype
+    orig_shape = numpy.asarray(params["global_orient"]).shape
+
+    angle = full_turn_rad * (float(frame_index) / float(num_frames))
+    R_y = _rotation_matrix_about_y(angle)
+
+    if compose_with_original:
+        R_orig = _axis_angle_to_rotation_matrix(go)
+        R_new = R_y @ R_orig
+    else:
+        R_new = R_y
+
+    aa = _rotation_matrix_to_axis_angle(R_new).astype(orig_dtype, copy=False).reshape(orig_shape)
+    out["global_orient"] = aa
+    return out
 
 
 def vertices_3d_to_2d(

@@ -206,8 +206,13 @@ def save_ply(
 
     DC path: ``x,y,z``, ``opacity``, ``f_dc_*``, ``scale_*``, ``rot_*``, ``parent_*``.
 
-    Full SH path (``shs.shape[1] > 3``): adds ``nx,ny,nz``, ``f_rest_*``, optional ``parent_*``.
-    Use ``log_scales=True`` to store scales in log space.
+    Full SH path (``shs.shape[1] > 3``): Inria-style layout with ``nx,ny,nz``, ``f_dc_*``,
+    ``f_rest_*``, ``opacity``, ``scale_*``, ``rot_*``, optional ``parent_*``.
+
+    ``log_scales`` (full SH branch only): training uses **linear** axis scales in
+    ``[scale_min, scale_max]``. Many external viewers expect ``scale_*`` in the PLY to be
+    ``log(max(s, eps))``. Set ``log_scales=True`` for SuperSplat / Inria-style tools;
+    ``False`` for round-trip with ``load_ply`` or other linear-scale consumers.
     """
     if hasattr(data, "xyz"):
         xyz = _to_numpy(getattr(data, "xyz"))
@@ -357,7 +362,12 @@ def reconstruct_gaussian_avatar_as_ply(
     log_scales: bool = True,
     include_parent: bool = True,
 ) -> Dict[str, Any]:
-    """Build Gaussian PLY payload from tensors, save to ``output_path``, and return the dict passed to ``save_ply``."""
+    """Build Gaussian PLY payload from tensors, save to ``output_path``, and return the dict passed to ``save_ply``.
+
+    Callers (e.g. ``inference.py``) should pass ``xyz`` that **already** includes any local
+    surface offset fused into world positions. Do not pass a parallel ``offset`` field in
+    ``gaussian_params`` for export: it is ignored here and would mislead reloaders.
+    """
     out_dir = os.path.dirname(output_path)
     if out_dir:
         os.makedirs(out_dir, exist_ok=True)
@@ -365,6 +375,8 @@ def reconstruct_gaussian_avatar_as_ply(
     rots = gaussian_params["rotation"]
     alphas = gaussian_params["alpha"]
     shs = gaussian_params["sh"]
+    if alphas.ndim > 1:
+        alphas = alphas.reshape(alphas.shape[0], -1).squeeze(-1)
 
     ply_data: Dict[str, Any] = {
         "xyz": xyz,
