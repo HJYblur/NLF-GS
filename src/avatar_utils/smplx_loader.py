@@ -59,7 +59,9 @@ def load_smplx_coord3d(path: str):
     p = Path(path)
 
     if p.suffix == ".pkl":
-        return _load_smplx_coord3d_from_params(str(p))
+        with open(p, "rb") as f:
+            params = pickle.load(f)
+        return _vertices_from_smplx_param_dict(params)
 
     # Legacy / fallback: load directly from mesh file
     mesh = trimesh.load(path)
@@ -67,21 +69,22 @@ def load_smplx_coord3d(path: str):
     return vertices
 
 
-def _load_smplx_coord3d_from_params(
-    pkl_path: str,
+# Zeroed for ``load_smplx_coord3d_tpose`` (body/hand only; jaw/eyes left from pickle).
+_SMPLX_POSE_KEYS = (
+    "global_orient",
+    "body_pose",
+    "left_hand_pose",
+    "right_hand_pose",
+)
+
+
+def _vertices_from_smplx_param_dict(
+    params: dict,
     model_path: str = "models/smplx",
     gender: str = "neutral",
     num_pca_comps: int = 12,
 ) -> torch.Tensor:
-    """Generate 3D vertices from SMPLX parameters in standard ordering.
-
-    This guarantees the returned vertex indices are consistent with the
-    standard SMPLX topology (and therefore with the avatar template's
-    ``parents`` tensor).
-    """
-    with open(pkl_path, "rb") as f:
-        params = pickle.load(f)
-
+    """Run SMPL-X forward from a parameter dict (same keys as ``smplx_param.pkl``)."""
     model = _get_smplx_model(model_path, gender, num_pca_comps)
 
     with torch.no_grad():
@@ -99,9 +102,8 @@ def _load_smplx_coord3d_from_params(
 
     verts = output.vertices[0]  # (Nv, 3), standard ordering
 
-    # Apply scale and translation stored alongside the SMPLX params
     if "scale" in params:
-        scale = float(params["scale"].squeeze())
+        scale = float(numpy.asarray(params["scale"]).squeeze())
         verts = verts * scale
     if "translation" in params:
         translation = torch.from_numpy(
@@ -110,6 +112,31 @@ def _load_smplx_coord3d_from_params(
         verts = verts + translation
 
     return verts  # (Nv, 3) float32
+
+
+def load_smplx_coord3d_tpose(
+    pkl_path: str,
+    model_path: str = "models/smplx",
+    gender: str = "neutral",
+    num_pca_comps: int = 12,
+) -> torch.Tensor:
+    """Same as ``load_smplx_coord3d`` for a ``.pkl``, but axis-angle / PCA poses are zeroed (T-pose).
+
+    Shape coefficients (``betas``), ``expression``, and optional ``scale`` / ``translation`` are kept.
+    """
+    with open(pkl_path, "rb") as f:
+        params = pickle.load(f)
+
+    tpose = dict(params)
+    for key in _SMPLX_POSE_KEYS:
+        if key not in tpose:
+            continue
+        arr = numpy.asarray(tpose[key], dtype=numpy.float32)
+        tpose[key] = numpy.zeros_like(arr)
+
+    return _vertices_from_smplx_param_dict(
+        tpose, model_path=model_path, gender=gender, num_pca_comps=num_pca_comps
+    )
 
 
 def vertices_3d_to_2d(
