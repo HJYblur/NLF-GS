@@ -1,0 +1,28 @@
+name: avatar-benchmark
+channels:
+  - conda-forge
+  - defaults
+
+dependencies:
+  - python=3.10
+  - pip
+  - numpy>=1.21.0
+  - tqdm>=4.62.0
+  - pip:
+      - opencv-python>=4.5.0
+      - imageio>=2.31.0
+      - imageio-ffmpeg>=0.4.0
+      - scikit-image>=0.20.0
+      - lpips>=0.1.4
+      # Install PyTorch first via https://pytorch.org/get-started/locally/
+      # for your CUDA/OS setup, then create this environment.
+      - lightning>=2.0.0
+      - wandb>=0.16.0
+      - torchvision>=0.15.0
+      - pillow>=8.0.0
+      - omegaconf>=2.1.0
+      - h5py>=3.1.0
+      - smplx
+      - trimesh>=3.9.0
+      - plyfile>=0.7.2
+      - pyrender>=0.1.45
