@@ -71,6 +71,7 @@ OUT_ROOT = Path(__file__).resolve().parents[2] / "processed"
 IMAGE_SIZE = CAMERA_CONFIG["image_size"]
 VIEWPOINTS = {k: np.array(v) for k, v in CAMERA_CONFIG["viewpoints"].items()}
 CAMERA_MAP_ROOT = Path(__file__).resolve().parents[2] / "data" / "THuman_cameras"
+TARGET_SUBJECT_HEIGHT_M = 1.80
 
 
 def _iter_identities(
@@ -178,6 +179,47 @@ def _mesh_to_pyrender(
 
     # Last resort: no visuals or texture found
     return pyrender.Mesh.from_trimesh(mesh, smooth=False)
+
+
+def _normalize_meshes_for_rendering(
+    meshes: list[trimesh.Trimesh],
+    target_height_m: float = TARGET_SUBJECT_HEIGHT_M,
+) -> list[trimesh.Trimesh]:
+    """Normalize subject scale and position before rendering.
+
+    This follows GHG-style preprocessing by:
+      1) scaling the subject to a canonical height (default: 1.80m),
+      2) recentering horizontally (X/Z) to the origin,
+      3) vertically centering the subject around Y=0.
+    """
+    if not meshes:
+        return meshes
+
+    all_vertices = np.vstack([m.vertices for m in meshes])
+    vmin = all_vertices.min(axis=0)
+    vmax = all_vertices.max(axis=0)
+    height = float(vmax[1] - vmin[1])
+    if height <= 1e-8:
+        raise ValueError(f"Invalid mesh height for normalization: {height}")
+
+    scale = float(target_height_m / height)
+    all_scaled = all_vertices * scale
+    scaled_vmin = all_scaled.min(axis=0)
+    scaled_vmax = all_scaled.max(axis=0)
+
+    # Keep the subject centered in frame for fixed cameras.
+    center_x = 0.5 * (scaled_vmin[0] + scaled_vmax[0])
+    center_z = 0.5 * (scaled_vmin[2] + scaled_vmax[2])
+    center_y = 0.5 * (scaled_vmin[1] + scaled_vmax[1])
+    translation = np.array([-center_x, -center_y, -center_z], dtype=np.float64)
+
+    normalized_meshes: list[trimesh.Trimesh] = []
+    for mesh in meshes:
+        m = mesh.copy()
+        m.vertices = (m.vertices.astype(np.float64) * scale) + translation
+        normalized_meshes.append(m)
+
+    return normalized_meshes
 
 
 def _render_views(
@@ -374,6 +416,7 @@ def preprocess_thuman(
         if not meshes:
             print(f"Skipping {identity}: failed to load meshes from {obj_path}")
             continue
+        meshes = _normalize_meshes_for_rendering(meshes)
         texture_path = _find_texture_for_obj(obj_path)
         _render_views(meshes, target_dir, texture_path, identity)
         print(f"Rendered {identity}")
