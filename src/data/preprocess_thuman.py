@@ -2,6 +2,7 @@ import os
 import sys
 from pathlib import Path
 import argparse
+import pickle
 
 # Make 'avatar_utils' importable when running as a script
 # Add the 'src' directory to sys.path so imports like 'from avatar_utils.x import y' work
@@ -72,6 +73,7 @@ IMAGE_SIZE = CAMERA_CONFIG["image_size"]
 VIEWPOINTS = {k: np.array(v) for k, v in CAMERA_CONFIG["viewpoints"].items()}
 CAMERA_MAP_ROOT = Path(__file__).resolve().parents[2] / "data" / "THuman_cameras"
 TARGET_SUBJECT_HEIGHT_M = 1.80
+SMPLX_SOURCE_ROOT = Path(__file__).resolve().parents[2] / "data" / "THuman_2.0_smplx_paras"
 
 
 def _iter_identities(
@@ -181,10 +183,34 @@ def _mesh_to_pyrender(
     return pyrender.Mesh.from_trimesh(mesh, smooth=False)
 
 
+def _compute_similarity_transform_from_vertices(
+    vertices: np.ndarray,
+    target_height_m: float = TARGET_SUBJECT_HEIGHT_M,
+) -> tuple[float, np.ndarray]:
+    """Compute canonical scale+translation from stacked vertices."""
+    vmin = vertices.min(axis=0)
+    vmax = vertices.max(axis=0)
+    height = float(vmax[1] - vmin[1])
+    if height <= 1e-8:
+        raise ValueError(f"Invalid mesh height for normalization: {height}")
+
+    scale = float(target_height_m / height)
+    scaled_vertices = vertices * scale
+    svmin = scaled_vertices.min(axis=0)
+    svmax = scaled_vertices.max(axis=0)
+
+    # Center body around the origin for fixed camera rendering.
+    center_x = 0.5 * (svmin[0] + svmax[0])
+    center_z = 0.5 * (svmin[2] + svmax[2])
+    center_y = 0.5 * (svmin[1] + svmax[1])
+    translation = np.array([-center_x, -center_y, -center_z], dtype=np.float64)
+    return scale, translation
+
+
 def _normalize_meshes_for_rendering(
     meshes: list[trimesh.Trimesh],
     target_height_m: float = TARGET_SUBJECT_HEIGHT_M,
-) -> list[trimesh.Trimesh]:
+) -> tuple[list[trimesh.Trimesh], float, np.ndarray]:
     """Normalize subject scale and position before rendering.
 
     This follows GHG-style preprocessing by:
@@ -193,25 +219,13 @@ def _normalize_meshes_for_rendering(
       3) vertically centering the subject around Y=0.
     """
     if not meshes:
-        return meshes
+        return meshes, 1.0, np.zeros(3, dtype=np.float64)
 
     all_vertices = np.vstack([m.vertices for m in meshes])
-    vmin = all_vertices.min(axis=0)
-    vmax = all_vertices.max(axis=0)
-    height = float(vmax[1] - vmin[1])
-    if height <= 1e-8:
-        raise ValueError(f"Invalid mesh height for normalization: {height}")
-
-    scale = float(target_height_m / height)
-    all_scaled = all_vertices * scale
-    scaled_vmin = all_scaled.min(axis=0)
-    scaled_vmax = all_scaled.max(axis=0)
-
-    # Keep the subject centered in frame for fixed cameras.
-    center_x = 0.5 * (scaled_vmin[0] + scaled_vmax[0])
-    center_z = 0.5 * (scaled_vmin[2] + scaled_vmax[2])
-    center_y = 0.5 * (scaled_vmin[1] + scaled_vmax[1])
-    translation = np.array([-center_x, -center_y, -center_z], dtype=np.float64)
+    scale, translation = _compute_similarity_transform_from_vertices(
+        all_vertices,
+        target_height_m=target_height_m,
+    )
 
     normalized_meshes: list[trimesh.Trimesh] = []
     for mesh in meshes:
@@ -219,7 +233,41 @@ def _normalize_meshes_for_rendering(
         m.vertices = (m.vertices.astype(np.float64) * scale) + translation
         normalized_meshes.append(m)
 
-    return normalized_meshes
+    return normalized_meshes, scale, translation
+
+
+def _export_subject_smplx(
+    identity: str,
+    out_dir: Path,
+    scale: float,
+    translation: np.ndarray,
+) -> None:
+    """Apply mesh normalization transform to source smplx_param.pkl and export it."""
+    src_pkl = SMPLX_SOURCE_ROOT / identity / "smplx_param.pkl"
+    if not src_pkl.exists():
+        print(f"Skipping SMPL-X export for {identity}: missing {src_pkl}")
+        return
+
+    with open(src_pkl, "rb") as f:
+        params = pickle.load(f)
+
+    old_scale = float(np.asarray(params.get("scale", 1.0)).reshape(-1)[0])
+    old_translation = np.asarray(params.get("translation", np.zeros(3)), dtype=np.float64).reshape(-1)
+    if old_translation.shape[0] != 3:
+        old_translation = old_translation[:3]
+        if old_translation.shape[0] < 3:
+            old_translation = np.pad(old_translation, (0, 3 - old_translation.shape[0]), mode="constant")
+
+    # Preserve smplx_loader convention: vertices = base_vertices * scale + translation.
+    new_scale = old_scale * scale
+    new_translation = old_translation * scale + translation
+    params["scale"] = np.array([new_scale], dtype=np.float32)
+    params["translation"] = new_translation.astype(np.float32).reshape(1, 3)
+
+    out_path = out_dir / f"{identity}_smplx.pkl"
+    with open(out_path, "wb") as f:
+        pickle.dump(params, f)
+    print(f"Wrote normalized SMPL-X params: {out_path}")
 
 
 def _render_views(
@@ -416,7 +464,8 @@ def preprocess_thuman(
         if not meshes:
             print(f"Skipping {identity}: failed to load meshes from {obj_path}")
             continue
-        meshes = _normalize_meshes_for_rendering(meshes)
+        meshes, scale, translation = _normalize_meshes_for_rendering(meshes)
+        _export_subject_smplx(identity, target_dir, scale, translation)
         texture_path = _find_texture_for_obj(obj_path)
         _render_views(meshes, target_dir, texture_path, identity)
         print(f"Rendered {identity}")

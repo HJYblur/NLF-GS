@@ -11,7 +11,7 @@ sys:
 data:
   raw: data
   root: processed
-  smplx_root: data/THuman_2.0_smplx_paras
+  smplx_root: processed
   num_views: 4
   image_size: [512, 512] # [W, H]
 
