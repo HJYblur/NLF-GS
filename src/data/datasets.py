@@ -29,8 +29,8 @@ class AvatarDataset(Dataset):
                 <subject>_right.(png|jpg|jpeg)
                 <subject>_right_mask.(png|jpg|jpeg)
                 
-        Layout per smplx_param:
-            data/THuman_2.0_smplx_params/<subject>/mesh_smplx.obj
+        Layout per smplx_param (preferred):
+            processed/<subject>/<subject>_smplx.pkl
 
     The dataset always loads all canonical views in VIEW_ORDER.
     Training-time fusion behavior is controlled by `data.num_views` in the trainer
@@ -53,7 +53,8 @@ class AvatarDataset(Dataset):
         self.target_w: int = int(image_size[0])
         self.target_h: int = int(image_size[1])
         self.root = Path(root)
-        self.smplx_root = Path(cfg.get("data", {}).get("smplx_root", "data/THuman_2.0_smplx_params"))
+        data_cfg = cfg.get("data", {})
+        self.smplx_root = Path(data_cfg.get("processed_root", "processed"))
 
         # Index subjects and required views
         self._records: List[Dict[str, Any]] = []
@@ -102,17 +103,17 @@ class AvatarDataset(Dataset):
 
         images_uint8 = (images_float.clamp(0.0, 1.0) * 255.0).round().to(torch.uint8)  # [V,C,H,W]
 
-        # Load SMPLX 3D vertices from parameter file (standard vertex ordering)
-        smplx_param_path = self.smplx_root / rec["subject"] / "smplx_param.pkl"
-        if smplx_param_path.exists():
-            vertices3d = load_smplx_coord3d(str(smplx_param_path))
+        # Load normalized SMPL-X parameters exported by preprocessing.
+        subject = rec["subject"]
+        candidates = [
+            self.smplx_root / subject / "smplx_param.pkl",
+            rec["subject_dir"] / "smplx_param.pkl",
+        ]
+        smplx_path = next((p for p in candidates if p.exists()), None)
+        if smplx_path is not None:
+            vertices3d = load_smplx_coord3d(str(smplx_path))
         else:
-            # Fallback: try the OBJ mesh (vertex ordering may not match template)
-            smplx_obj_path = self.smplx_root / rec["subject"] / "mesh_smplx.obj"
-            if smplx_obj_path.exists():
-                vertices3d = load_smplx_coord3d(str(smplx_obj_path))
-            else:
-                vertices3d = torch.empty(0, 3, dtype=torch.float32)
+            vertices3d = torch.empty(0, 3, dtype=torch.float32)
 
         # Project 3D vertices to 2D for each view using precomputed camera params
         if vertices3d.shape[0] > 0:
@@ -172,6 +173,7 @@ class AvatarDataset(Dataset):
                 self._records.append(
                     {
                         "subject": subj_dir.name,
+                        "subject_dir": subj_dir,
                         "view_paths": paths,
                         "view_names": list(needed),
                     }
