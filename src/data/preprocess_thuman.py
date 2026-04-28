@@ -275,10 +275,17 @@ def _export_subject_smplx(
     params["scale"] = np.array([new_scale], dtype=np.float32)
     params["translation"] = new_translation.astype(np.float32).reshape(1, 3)
 
-    out_path = out_dir / f"{identity}_smplx.pkl"
-    with open(out_path, "wb") as f:
+    # Primary normalized filename for loaders: smplx_param.pkl
+    primary_out = out_dir / "smplx_param.pkl"
+    with open(primary_out, "wb") as f:
         pickle.dump(params, f)
-    print(f"Wrote normalized SMPL-X params: {out_path}")
+    print(f"Wrote normalized SMPL-X params: {primary_out}")
+
+    # Backward-compatible fallback filename.
+    fallback_out = out_dir / f"{identity}_smplx.pkl"
+    with open(fallback_out, "wb") as f:
+        pickle.dump(params, f)
+    print(f"Wrote fallback SMPL-X params: {fallback_out}")
 
 
 def _render_views(

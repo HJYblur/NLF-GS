@@ -205,8 +205,8 @@ def _vertices3d_for_inference(cfg: dict, subject: str) -> torch.Tensor:
     )
     raw_smplx_root = Path(data_cfg.get("raw_smplx_root", "data/THuman_2.0_smplx_paras"))
     candidates = [
-        smplx_root / subject / f"{subject}_smplx.pkl",
         smplx_root / subject / "smplx_param.pkl",
+        smplx_root / subject / f"{subject}_smplx.pkl",
         smplx_root / subject / "mesh_smplx.obj",
         raw_smplx_root / subject / "smplx_param.pkl",
         raw_smplx_root / subject / "mesh_smplx.obj",
@@ -216,7 +216,7 @@ def _vertices3d_for_inference(cfg: dict, subject: str) -> torch.Tensor:
             return load_smplx_coord3d(str(p))
     raise FileNotFoundError(
         f"SMPL-X params not found for subject {subject!r} under {smplx_root} or {raw_smplx_root} "
-        f"(expected {subject}_smplx.pkl, smplx_param.pkl, or mesh_smplx.obj). "
+        f"(expected smplx_param.pkl, {subject}_smplx.pkl, or mesh_smplx.obj). "
         f"Set inference.smplx_source: canonical_mesh to use avatar_template.cano_mesh_path instead."
     )
 

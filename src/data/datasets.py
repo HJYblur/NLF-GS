@@ -108,12 +108,13 @@ class AvatarDataset(Dataset):
 
         images_uint8 = (images_float.clamp(0.0, 1.0) * 255.0).round().to(torch.uint8)  # [V,C,H,W]
 
-        # Load SMPL-X 3D vertices from normalized parameter file (preferred).
+        # Load SMPL-X 3D vertices (prefer canonical smplx_param.pkl).
         subject = rec["subject"]
         candidates = [
-            self.smplx_root / subject / f"{subject}_smplx.pkl",
-            rec["subject_dir"] / f"{subject}_smplx.pkl",
             self.smplx_root / subject / "smplx_param.pkl",
+            self.smplx_root / subject / f"{subject}_smplx.pkl",
+            rec["subject_dir"] / "smplx_param.pkl",
+            rec["subject_dir"] / f"{subject}_smplx.pkl",
             self.smplx_root / subject / "mesh_smplx.obj",
         ]
         smplx_path = next((p for p in candidates if p.exists()), None)

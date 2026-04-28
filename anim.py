@@ -141,8 +141,8 @@ def _resolve_smplx_pkl(cfg: dict, subject: str) -> Path:
     if not smplx_root.is_absolute():
         smplx_root = _repo_root() / smplx_root
     candidates = [
-        smplx_root / subject / f"{subject}_smplx.pkl",
         smplx_root / subject / "smplx_param.pkl",
+        smplx_root / subject / f"{subject}_smplx.pkl",
     ]
     for p in candidates:
         if p.is_file():
