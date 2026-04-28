@@ -55,7 +55,8 @@ def _subject_sort_key(subject: str) -> tuple[int, int | str]:
 
 def _subjects_in_range(cfg: dict, start_subject: str, end_subject: str) -> list[str]:
     """Return available dataset subjects within the inclusive [start, end] range."""
-    data_root = cfg.get("data", {}).get("root", "data/processed_test")
+    data_cfg = cfg.get("data", {})
+    data_root = data_cfg.get("processed_root", data_cfg.get("root", "data/processed_test"))
     ds = AvatarDataset(root=data_root)
     available = sorted({str(rec["subject"]) for rec in ds._records}, key=_subject_sort_key)
 
@@ -195,16 +196,27 @@ def _vertices3d_for_inference(cfg: dict, subject: str) -> torch.Tensor:
             f"inference.smplx_source must be 'subject_params' or 'canonical_mesh', got {source!r}"
         )
 
-    smplx_root = Path(cfg.get("data", {}).get("smplx_root", "data/THuman_2.0_smplx_params"))
-    pkl = smplx_root / subject / "smplx_param.pkl"
-    obj = smplx_root / subject / "mesh_smplx.obj"
-    if pkl.exists():
-        return load_smplx_coord3d(str(pkl))
-    if obj.exists():
-        return load_smplx_coord3d(str(obj))
+    data_cfg = cfg.get("data", {})
+    smplx_root = Path(
+        data_cfg.get(
+            "smplx_root",
+            data_cfg.get("processed_root", "data/processed_test"),
+        )
+    )
+    raw_smplx_root = Path(data_cfg.get("raw_smplx_root", "data/THuman_2.0_smplx_paras"))
+    candidates = [
+        smplx_root / subject / f"{subject}_smplx.pkl",
+        smplx_root / subject / "smplx_param.pkl",
+        smplx_root / subject / "mesh_smplx.obj",
+        raw_smplx_root / subject / "smplx_param.pkl",
+        raw_smplx_root / subject / "mesh_smplx.obj",
+    ]
+    for p in candidates:
+        if p.exists():
+            return load_smplx_coord3d(str(p))
     raise FileNotFoundError(
-        f"SMPL-X params not found for subject {subject!r} under {smplx_root} "
-        f"(expected smplx_param.pkl or mesh_smplx.obj). "
+        f"SMPL-X params not found for subject {subject!r} under {smplx_root} or {raw_smplx_root} "
+        f"(expected {subject}_smplx.pkl, smplx_param.pkl, or mesh_smplx.obj). "
         f"Set inference.smplx_source: canonical_mesh to use avatar_template.cano_mesh_path instead."
     )
 
@@ -230,7 +242,8 @@ def run_inference(
     device: torch.device,
 ) -> tuple[torch.Tensor, dict[str, torch.Tensor], torch.Tensor, str, dict]:
     """Run the forward pass for one subject (4 views). Returns fused Gaussians, vertices3d, subject, template avatar dict."""
-    data_root = cfg.get("data", {}).get("root", "data/processed_test")
+    data_cfg = cfg.get("data", {})
+    data_root = data_cfg.get("processed_root", data_cfg.get("root", "data/processed_test"))
     ds = AvatarDataset(root=data_root)
     idx = _find_subject_index(ds, subject)
     batch = ds[idx]

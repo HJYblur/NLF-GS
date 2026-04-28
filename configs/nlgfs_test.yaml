@@ -9,9 +9,11 @@ sys:
 
 # --- Dataset & resolution ---
 data:
-  raw: data
-  root: processed_test
-  smplx_root: processed_test
+  raw_obj_root: data/THuman_2.0
+  raw_smplx_root: data/THuman_2.0_smplx_paras
+  processed_root: processed_test
+  root: processed_test # backward-compatible alias
+  smplx_root: processed_test # backward-compatible alias
   num_views: 4
   image_size: [1024, 1024]
 

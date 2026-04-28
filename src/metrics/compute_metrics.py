@@ -291,7 +291,8 @@ if __name__ == "__main__":
     config_path = "configs/nlfgs_test.yaml"
     cfg = load_config(config_path)
 
-    target = cfg.get("data", {}).get("root", "./processed_test")
+    data_cfg = cfg.get("data", {})
+    target = data_cfg.get("processed_root", data_cfg.get("root", "./processed_test"))
     preds = cfg.get("inference", {}).get("output_dir", "./output")
 
     evaluate_metrics(preds_root=preds, target_root=target, config_path=config_path)

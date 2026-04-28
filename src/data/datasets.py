@@ -53,7 +53,13 @@ class AvatarDataset(Dataset):
         self.target_w: int = int(image_size[0])
         self.target_h: int = int(image_size[1])
         self.root = Path(root)
-        self.smplx_root = Path(cfg.get("data", {}).get("smplx_root", "processed"))
+        data_cfg = cfg.get("data", {})
+        self.smplx_root = Path(
+            data_cfg.get(
+                "smplx_root",
+                data_cfg.get("processed_root", "processed"),
+            )
+        )
 
         # Index subjects and required views
         self._records: List[Dict[str, Any]] = []

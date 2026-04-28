@@ -67,13 +67,24 @@ def get_camera_config():
 
 # Global constants from config
 CAMERA_CONFIG = get_camera_config()
-DATA_ROOT = Path(__file__).resolve().parents[2] / "data" / "THuman_2.0"
-OUT_ROOT = Path(__file__).resolve().parents[2] / "processed"
 IMAGE_SIZE = CAMERA_CONFIG["image_size"]
 VIEWPOINTS = {k: np.array(v) for k, v in CAMERA_CONFIG["viewpoints"].items()}
 CAMERA_MAP_ROOT = Path(__file__).resolve().parents[2] / "data" / "THuman_cameras"
 TARGET_SUBJECT_HEIGHT_M = 1.80
-SMPLX_SOURCE_ROOT = Path(__file__).resolve().parents[2] / "data" / "THuman_2.0_smplx_paras"
+
+
+def get_data_paths() -> tuple[Path, Path, Path]:
+    cfg = get_config()
+    data_cfg = cfg.get("data", {})
+    raw_obj_root = Path(data_cfg.get("raw_obj_root", data_cfg.get("raw", "data/THuman_2.0")))
+    raw_smplx_root = Path(
+        data_cfg.get("raw_smplx_root", "data/THuman_2.0_smplx_paras")
+    )
+    processed_root = Path(data_cfg.get("processed_root", data_cfg.get("root", "processed")))
+    return raw_obj_root, raw_smplx_root, processed_root
+
+
+DATA_ROOT, SMPLX_SOURCE_ROOT, OUT_ROOT = get_data_paths()
 
 
 def _iter_identities(

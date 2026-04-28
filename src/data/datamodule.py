@@ -31,12 +31,13 @@ class AvatarDataModule(L.LightningDataModule):
     def setup(self, stage: Optional[str] = None):
         data_cfg = self.cfg.get("data", {})
         train_cfg = self.cfg.get("train", {})
+        processed_root = data_cfg.get("processed_root", data_cfg.get("root", "processed"))
         train_base_ds = AvatarDataset(
-            root=data_cfg.get("root", "processed"),
+            root=processed_root,
             transform=None,
         )
         val_base_ds = AvatarDataset(
-            root=data_cfg.get("root", "processed"),
+            root=processed_root,
             transform=None,
         )
         # Chunk views sequentially based on desired views-per-batch (use train batch_size)
