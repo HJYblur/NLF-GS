@@ -9,15 +9,15 @@ sys:
 
 # --- Dataset & resolution (single source of truth for image_size) ---
 data:
-  raw: data
-  root: processed
-  smplx_root: data/THuman_2.0_smplx_paras
+  raw_obj_root: data/THuman_2.0
+  raw_smplx_root: data/THuman_2.0_smplx_paras
+  processed_root: processed
   num_views: 4
   image_size: [1024,1024] # [W, H]
 
 # --- Canonical cameras (intrinsics/extrinsics-style; resolution lives under data) ---
 camera:
-  distance: 1.5 # Camera distance from origin
+  distance: 3.0 # Camera distance from origin
   yfov_deg: 45.0 # Vertical field of view in degrees
   up: [0.0, 1.0, 0.0] # Default up vector
   viewpoints: # Direction vectors for each canonical view

@@ -131,10 +131,11 @@ def _default_bundle_path(cfg: dict, subject: str) -> Path:
 
 
 def _resolve_smplx_pkl(cfg: dict, subject: str) -> Path:
-    smplx_root = Path(cfg.get("data", {}).get("smplx_root", "data/THuman_2.0_smplx_params"))
-    if not smplx_root.is_absolute():
-        smplx_root = _repo_root() / smplx_root
-    return smplx_root / subject / "smplx_param.pkl"
+    data_cfg = cfg.get("data", {})
+    processed_root = Path(data_cfg.get("processed_root", "processed"))
+    if not processed_root.is_absolute():
+        processed_root = _repo_root() / processed_root
+    return processed_root / subject / "smplx_param.pkl"
 
 
 def _base_smplx_params(cfg: dict, subject: str, pose: str, pkl_override: Path | None) -> dict:

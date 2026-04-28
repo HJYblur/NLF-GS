@@ -9,9 +9,9 @@ sys:
 
 # --- Dataset & resolution ---
 data:
-  raw: data
-  root: processed_test
-  smplx_root: data/THuman_2.0_smplx_paras
+  raw_obj_root: data/THuman_2.0
+  raw_smplx_root: data/THuman_2.0_smplx_paras
+  processed_root: processed_test
   num_views: 4
   image_size: [1024, 1024]
 
@@ -83,7 +83,7 @@ render:
 inference:
   # Default checkpoint (repo-root relative when running from avatar-benchmark/)
   checkpoint: models/checkpoints/z6pwnr64-epoch=49-step=19100.ckpt
-  # subject_params: smplx_root/<subject>/smplx_param.pkl or mesh_smplx.obj
+  # subject_params: processed_root/<subject>/smplx_param.pkl
   # canonical_mesh: vertices from avatar_template.cano_mesh_path (same topology as avatar_template.path)
   smplx_source: subject_params
   output_dir: output

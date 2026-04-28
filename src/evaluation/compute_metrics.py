@@ -36,6 +36,8 @@ def _setup_lpips_cache(config_path=None):
 ###########################################
 
 IMAGE_EXTS = (".png", ".jpg", ".jpeg")
+CROP_WIDTH = 1000
+CROP_HEIGHT = 500
 
 
 def mse(image_a, image_b):
@@ -60,6 +62,37 @@ def _to_rgb(image):
 def _load_image(path):
     image = imageio.imread(path).astype("float32") / 255.0
     return _to_rgb(image)
+
+
+def _foreground_from_images(gt, pred):
+    # Fallback when explicit mask is unavailable:
+    # use non-black regions from GT or prediction.
+    gt_fg = np.any(gt > 1e-6, axis=2)
+    pred_fg = np.any(pred > 1e-6, axis=2)
+    return gt_fg | pred_fg
+
+
+def _compute_fixed_crop(mask_bool, image_shape, crop_h=CROP_HEIGHT, crop_w=CROP_WIDTH):
+    h, w = image_shape[:2]
+    crop_h = min(int(crop_h), h)
+    crop_w = min(int(crop_w), w)
+
+    ys, xs = np.where(mask_bool)
+    if ys.size == 0 or xs.size == 0:
+        center_y, center_x = h // 2, w // 2
+    else:
+        y_min, y_max = ys.min(), ys.max()
+        x_min, x_max = xs.min(), xs.max()
+        center_y = int(0.5 * (y_min + y_max))
+        center_x = int(0.5 * (x_min + x_max))
+
+    y0 = center_y - crop_h // 2
+    x0 = center_x - crop_w // 2
+    y0 = max(0, min(y0, h - crop_h))
+    x0 = max(0, min(x0, w - crop_w))
+    y1 = y0 + crop_h
+    x1 = x0 + crop_w
+    return y0, y1, x0, x1
 
 
 def _find_first_existing(patterns):
@@ -183,16 +216,22 @@ def compute_metrics(preds_root, target_root, config_path=None):
                     mask = mask[:, :, 0]
                 if mask.shape[:2] != gt.shape[:2]:
                     mask = cv2.resize(mask, (gt.shape[1], gt.shape[0]), interpolation=cv2.INTER_NEAREST)
-
-                fg = (mask > 0.5).astype("float32")[:, :, None]
-                if fg.sum() == 0:
-                    print(f"skip {subject}/{view}: empty mask")
-                    continue
-                gt_eval = gt * fg
-                pred_eval = pred * fg
+                fg_bool = mask > 0.5
             else:
-                gt_eval = gt
-                pred_eval = pred
+                fg_bool = _foreground_from_images(gt, pred)
+
+            if not np.any(fg_bool):
+                print(f"skip {subject}/{view}: empty foreground")
+                continue
+
+            y0, y1, x0, x1 = _compute_fixed_crop(
+                fg_bool,
+                gt.shape,
+                crop_h=CROP_HEIGHT,
+                crop_w=CROP_WIDTH,
+            )
+            gt_eval = gt[y0:y1, x0:x1]
+            pred_eval = pred[y0:y1, x0:x1]
 
             sample_mse = mse(pred_eval, gt_eval)
             if sample_mse <= 1e-12:
@@ -252,7 +291,8 @@ if __name__ == "__main__":
     config_path = "configs/nlfgs_test.yaml"
     cfg = load_config(config_path)
 
-    target = cfg.get("data", {}).get("root", "./processed_test")
+    data_cfg = cfg.get("data", {})
+    target = data_cfg.get("processed_root", "./processed_test")
     preds = cfg.get("inference", {}).get("output_dir", "./output")
 
     evaluate_metrics(preds_root=preds, target_root=target, config_path=config_path)
