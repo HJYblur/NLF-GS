@@ -72,7 +72,7 @@ train:
   precision: 16-mixed # Use AMP (fp16) to halve VRAM on activations & weights
   batch_size: 4 # Must match num_views (4 views fused per subject)
   num_workers: 2
-  epochs: 50
+  epochs: 70
   val_ratio: 0.1
   train_decoder_only: false # true: freeze backbone and train decoder only; false: also train ResNet-FPN
 
