@@ -17,7 +17,7 @@ data:
 
 # --- Canonical cameras (intrinsics/extrinsics-style; resolution lives under data) ---
 camera:
-  distance: 1.5 # Camera distance from origin
+  distance: 3.0 # Camera distance from origin
   yfov_deg: 45.0 # Vertical field of view in degrees
   up: [0.0, 1.0, 0.0] # Default up vector
   viewpoints: # Direction vectors for each canonical view
