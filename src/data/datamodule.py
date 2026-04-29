@@ -1,5 +1,5 @@
 from typing import Optional, Dict, Any, Callable
-
+from pathlib import Path
 import math
 import torch
 import numpy as np
@@ -32,32 +32,78 @@ class AvatarDataModule(L.LightningDataModule):
         data_cfg = self.cfg.get("data", {})
         train_cfg = self.cfg.get("train", {})
         processed_root = data_cfg.get("processed_root", "processed")
-        train_base_ds = AvatarDataset(
-            root=processed_root,
-            transform=None,
-        )
-        val_base_ds = AvatarDataset(
-            root=processed_root,
-            transform=None,
-        )
+
+        # Build a single base dataset and create deterministic random split by subject.
+        processed_root = Path(processed_root)
+        base_ds = AvatarDataset(root=processed_root, transform=None)
+
         # Chunk views sequentially based on desired views-per-batch (use train batch_size)
         chunk_size = int(train_cfg.get("batch_size", 4))
 
-        n = len(train_base_ds)
-        val_ratio = float(train_cfg.get("val_ratio", 0.0))
-        if val_ratio > 0.0 and n > 1:
-            n_val = max(1, int(math.floor(n * val_ratio)))
-            idx = torch.randperm(n).tolist()
-            val_idx = idx[:n_val]
-            train_idx = idx[n_val:]
-            if len(train_idx) == 0:  # fallback to at least one train sample
-                train_idx, val_idx = idx[:-1], idx[-1:]
-            train_base = Subset(train_base_ds, train_idx)
-            val_base = Subset(val_base_ds, val_idx)
+        n = len(base_ds)
+
+        out_dir = Path("data")
+        out_dir.mkdir(parents=True, exist_ok=True)
+        val_file = out_dir / "split_val.txt"
+        train_file = out_dir / "split_train.txt"
+
+        subjects = [rec["subject"] for rec in base_ds._records]
+        subject_to_idx = {s: i for i, s in enumerate(subjects)}
+
+        if val_file.exists() and train_file.exists():
+            # Use fixed split from files
+            val_subjects = [l.strip() for l in val_file.read_text().splitlines() if l.strip()]
+            train_subjects = [l.strip() for l in train_file.read_text().splitlines() if l.strip()]
+
+            missing_val = [s for s in val_subjects if s not in subject_to_idx]
+            missing_train = [s for s in train_subjects if s not in subject_to_idx]
+            if missing_val:
+                print(f"Warning: {len(missing_val)} subjects in data/split_val.txt not found in dataset: {missing_val}")
+            if missing_train:
+                print(f"Warning: {len(missing_train)} subjects in data/split_train.txt not found in dataset: {missing_train}")
+
+            val_idx = [subject_to_idx[s] for s in val_subjects if s in subject_to_idx]
+            train_idx = [subject_to_idx[s] for s in train_subjects if s in subject_to_idx]
+
+        else:
+            # Number of validation subjects to reserve (default 100)
+            n_val_requested = int(train_cfg.get("val_count", 100))
+            n_val = min(n_val_requested, max(0, n))
+
+            # Deterministic RNG seed for reproducibility
+            seed = int(train_cfg.get("seed", 42))
+            rng = np.random.RandomState(seed)
+
+            indices = np.arange(len(subjects))
+            rng.shuffle(indices)
+
+            # Assign val/train indices
+            val_idx = indices[:n_val].tolist()
+            train_idx = indices[n_val:].tolist()
+            if len(train_idx) == 0 and len(val_idx) > 0:
+                # keep at least one training subject
+                train_idx = val_idx[:-1]
+                val_idx = val_idx[-1:]
+
+            # Persist generated splits for reproducibility
+            val_subjects = [subjects[i] for i in val_idx]
+            train_subjects = [subjects[i] for i in train_idx]
+            with open(val_file, "w") as f:
+                f.write("\n".join(val_subjects) + ("\n" if val_subjects else ""))
+            with open(train_file, "w") as f:
+                f.write("\n".join(train_subjects) + ("\n" if train_subjects else ""))
+
+        # Create Subset datasets for train/val
+        if len(train_idx) > 0:
+            train_base = Subset(base_ds, train_idx)
             self.train_ds = ViewsChunkedDataset(train_base, chunk_size)
+        else:
+            self.train_ds = None
+
+        if len(val_idx) > 0:
+            val_base = Subset(base_ds, val_idx)
             self.val_ds = ViewsChunkedDataset(val_base, chunk_size)
         else:
-            self.train_ds = ViewsChunkedDataset(train_base_ds, chunk_size)
             self.val_ds = None
 
     def train_dataloader(self) -> DataLoader:

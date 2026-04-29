@@ -214,6 +214,7 @@ processed/
 processed_512/
 processed_512_test/
 processed_test/
+GHG**
 
 
 # Ignore training files
