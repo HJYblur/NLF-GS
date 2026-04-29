@@ -147,7 +147,7 @@ def _extract_views(subject_target_dir):
     return sorted(views)
 
 
-def compute_metrics(preds_root, target_root, config_path=None):
+def compute_metrics(preds_root, target_root, config_path=None, use_mask=True, use_crop=False):
     config = load_config(config_path)
     image_size = config.get("data", {}).get("image_size", [1024, 1024])
     if len(image_size) == 2:
@@ -210,28 +210,34 @@ def compute_metrics(preds_root, target_root, config_path=None):
                 gt = cv2.resize(gt, (target_w, target_h), interpolation=cv2.INTER_LINEAR)
                 pred = cv2.resize(pred, (target_w, target_h), interpolation=cv2.INTER_LINEAR)
 
-            if mask_path:
+            if use_mask and mask_path:
                 mask = imageio.imread(mask_path).astype("float32") / 255.0
                 if mask.ndim == 3:
                     mask = mask[:, :, 0]
                 if mask.shape[:2] != gt.shape[:2]:
                     mask = cv2.resize(mask, (gt.shape[1], gt.shape[0]), interpolation=cv2.INTER_NEAREST)
                 fg_bool = mask > 0.5
-            else:
+            elif use_mask:
                 fg_bool = _foreground_from_images(gt, pred)
+            else:
+                fg_bool = np.ones(gt.shape[:2], dtype=bool)
 
             if not np.any(fg_bool):
                 print(f"skip {subject}/{view}: empty foreground")
                 continue
 
-            y0, y1, x0, x1 = _compute_fixed_crop(
-                fg_bool,
-                gt.shape,
-                crop_h=CROP_HEIGHT,
-                crop_w=CROP_WIDTH,
-            )
-            gt_eval = gt[y0:y1, x0:x1]
-            pred_eval = pred[y0:y1, x0:x1]
+            if use_crop:
+                y0, y1, x0, x1 = _compute_fixed_crop(
+                    fg_bool,
+                    gt.shape,
+                    crop_h=CROP_HEIGHT,
+                    crop_w=CROP_WIDTH,
+                )
+                gt_eval = gt[y0:y1, x0:x1]
+                pred_eval = pred[y0:y1, x0:x1]
+            else:
+                gt_eval = gt
+                pred_eval = pred
 
             sample_mse = mse(pred_eval, gt_eval)
             if sample_mse <= 1e-12:
@@ -269,11 +275,13 @@ def compute_metrics(preds_root, target_root, config_path=None):
     )
 
 
-def evaluate_metrics(preds_root, target_root, config_path=None):
+def evaluate_metrics(preds_root, target_root, config_path=None, use_mask=True, use_crop=False):
     psnrs, ssims, lpips_alex, lpips_vgg = compute_metrics(
         preds_root=preds_root,
         target_root=target_root,
-        config_path=config_path
+        config_path=config_path,
+        use_mask=use_mask,
+        use_crop=use_crop
     )
 
     if psnrs.size == 0 or ssims.size == 0:
@@ -288,11 +296,29 @@ def evaluate_metrics(preds_root, target_root, config_path=None):
 
 
 if __name__ == "__main__":
-    config_path = "configs/nlfgs_test.yaml"
+    import argparse
+    
+    parser = argparse.ArgumentParser(description="Compute evaluation metrics")
+    parser.add_argument("--config-path", default="configs/nlfgs_test.yaml", help="Path to config file")
+    parser.add_argument("--preds-root", default=None, help="Root directory of predictions (overrides config)")
+    parser.add_argument("--target-root", default=None, help="Root directory of targets (overrides config)")
+    parser.add_argument("--use-mask", action="store_true", default=True, help="Use mask for evaluation")
+    parser.add_argument("--no-mask", dest="use_mask", action="store_false", help="Disable mask for evaluation")
+    parser.add_argument("--use-crop", action="store_true", default=False, help="Use fixed crop for evaluation")
+    
+    args = parser.parse_args()
+    
+    config_path = args.config_path
     cfg = load_config(config_path)
 
     data_cfg = cfg.get("data", {})
-    target = data_cfg.get("processed_root", "./processed_test")
-    preds = cfg.get("inference", {}).get("output_dir", "./output")
+    target = args.target_root or data_cfg.get("processed_root", "./processed_test")
+    preds = args.preds_root or cfg.get("inference", {}).get("output_dir", "./output")
 
-    evaluate_metrics(preds_root=preds, target_root=target, config_path=config_path)
+    evaluate_metrics(
+        preds_root=preds,
+        target_root=target,
+        config_path=config_path,
+        use_mask=args.use_mask,
+        use_crop=args.use_crop
+    )
