@@ -312,7 +312,7 @@ if __name__ == "__main__":
     cfg = load_config(config_path)
 
     data_cfg = cfg.get("data", {})
-    target = args.target_root or data_cfg.get("processed_root", "./processed_test")
+    target = args.target_root or data_cfg.get("processed_root", "./processed")
     preds = args.preds_root or cfg.get("inference", {}).get("output_dir", "./output")
 
     evaluate_metrics(

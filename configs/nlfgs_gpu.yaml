@@ -56,7 +56,7 @@ decoder:
   sh_degree: 1
   out_dim: 23
   scale_min: 1.0e-6 # sigmoid lower bound for Gaussian scale
-  scale_max: 2.0e-2 # sigmoid upper bound for Gaussian scale
+  scale_max: 1.0e-2 # sigmoid upper bound for Gaussian scale
   alpha_min: 0.0 # lower bound for opacity
   alpha_max: 1.0 # upper bound for opacity
   rot_min: -1.0 # pre-normalization lower bound for quaternion components
@@ -93,7 +93,7 @@ train:
   weight_masked_ssim: 0.1
   weight_perceptual: 0.1
   weight_silhouette: 0.1
-  weight_scale_reg: 0.005
+  weight_scale_reg: 0.01
   weight_offset_reg: 0.01
   weight_opacity_nontransparent: 0.005
   # Unused in final loss now (commented out in losses.py)

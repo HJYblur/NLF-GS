@@ -77,20 +77,26 @@ python src/data/preprocess_thuman.py
 
 All the preprocessed data will be saved under `processed` and `processed_test` automatically.
 
-## Train 
+## Code Run
+### Train 
 
 ```bash
 python train.py
 ```
 
-## Inference
+### Inference
 
-For generating an avatar for a unseen subject, you should run the following command. We use `--start-subject` and `--end-subject` to support multi-generation. By default, the subject here refers to the ones under `processed_test`. If you only wish to test custom subject, you can put them under this folder set the two args to be the name of your subject.
+For generating an avatar for a unseen subject, you should run the following command. 
 
 ```bash
-python inference.py --start-subject <subject_name> --end-subject <subject_name>
-
-# e.g.
-python inference.py --start-subject 0426 --end-subject 0426
+python inference.py
 ```
-
+### Evaluation
+For NLF-GS:
+```bash
+python src/evaluation/compute_metrics.py --target-root output_gt   --preds-root output --no-mask
+```
+For GHG:
+```bash
+python src/evaluation/compute_metrics.py --target-root GHG_dataset/gt   --preds-root GHG_dataset/pred --no-mask
+```

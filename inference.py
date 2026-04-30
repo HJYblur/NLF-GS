@@ -53,8 +53,8 @@ def _subject_sort_key(subject: str) -> tuple[int, int | str]:
     return (1, subject)
 
 
-def _subjects_in_range(cfg: dict, start_subject: str, end_subject: str) -> list[str]:
-    """Return available dataset subjects within the inclusive [start, end] range."""
+def _subjects_from_val_split(cfg: dict) -> list[str]:
+    """Return subjects listed in data.val_subject_path (or data.val_dsubject_path)."""
     data_cfg = cfg.get("data", {})
     data_root = data_cfg.get("processed_root", "data/processed_test")
     ds = AvatarDataset(root=data_root)
@@ -63,22 +63,34 @@ def _subjects_in_range(cfg: dict, start_subject: str, end_subject: str) -> list[
     if not available:
         raise ValueError(f"No subjects found under {data_root!r}.")
 
-    start = str(start_subject).strip()
-    end = str(end_subject).strip()
+    val_subject_path = (
+        data_cfg.get("val_subject_path")
+        or data_cfg.get("val_dsubject_path")
+    )
+    if not val_subject_path:
+        raise ValueError(
+            "Missing data.val_subject_path in config (or data.val_dsubject_path for backward compatibility)."
+        )
 
-    if start.isdigit() and end.isdigit():
-        start_i, end_i = int(start), int(end)
-        if start_i > end_i:
-            raise ValueError(f"start-subject ({start}) must be <= end-subject ({end}).")
-        selected = [s for s in available if s.isdigit() and start_i <= int(s) <= end_i]
-    else:
-        if start > end:
-            raise ValueError(f"start-subject ({start}) must be <= end-subject ({end}) in lexical order.")
-        selected = [s for s in available if start <= s <= end]
+    split_path = _resolve_path(str(val_subject_path))
+    if not split_path.is_file():
+        raise FileNotFoundError(f"Validation subject split file not found: {split_path}")
 
+    subjects = [line.strip() for line in split_path.read_text().splitlines() if line.strip()]
+    if not subjects:
+        raise ValueError(f"No subjects listed in split file: {split_path}")
+
+    available_set = set(available)
+    missing = [s for s in subjects if s not in available_set]
+    if missing:
+        print(
+            f"Warning: {len(missing)} subject(s) from {split_path} not found under {data_root}: {missing}"
+        )
+
+    selected = [s for s in subjects if s in available_set]
     if not selected:
         raise ValueError(
-            f"No dataset subjects found in range [{start}, {end}] under {data_root!r}."
+            f"None of the subjects in {split_path} exist under {data_root!r}."
         )
 
     return selected
@@ -310,19 +322,7 @@ def run_inference(
 
 
 def main():
-    parser = argparse.ArgumentParser(description="NLF-GS inference (single subject, 4 views)")
-    parser.add_argument(
-        "--start-subject",
-        type=str,
-        required=True,
-        help="Start subject id (inclusive), e.g. 0001",
-    )
-    parser.add_argument(
-        "--end-subject",
-        type=str,
-        required=True,
-        help="End subject id (inclusive), e.g. 0020",
-    )
+    parser = argparse.ArgumentParser(description="NLF-GS inference from configured validation subject split")
     parser.add_argument(
         "--config",
         type=str,
@@ -348,9 +348,9 @@ def main():
         raise ValueError("Pass --checkpoint or set inference.checkpoint in the YAML config.")
     ckpt_path = _resolve_path(str(ckpt_arg))
 
-    subjects = _subjects_in_range(cfg, args.start_subject, args.end_subject)
+    subjects = _subjects_from_val_split(cfg)
     print(
-        f"Running inference for {len(subjects)} subject(s): "
+        f"Running inference for {len(subjects)} subject(s) from data.val_subject_path: "
         f"{subjects[0]} -> {subjects[-1]}"
     )
 

@@ -11,20 +11,12 @@ sys:
 data:
   raw_obj_root: data/THuman_2.0
   raw_smplx_root: data/THuman_2.0_smplx_paras
-  processed_root: processed_test
+  processed_root: processed
+  train_subject_path: data/split_train.txt
+  val_subject_path: data/split_val.txt
   num_views: 4
   image_size: [1024, 1024]
 
-# --- Canonical cameras ---
-camera:
-  distance: 1.5
-  yfov_deg: 45.0
-  up: [0.0, 1.0, 0.0]
-  viewpoints:
-    front: [0.0, 0.0, 1.0]
-    back: [0.0, 0.0, -1.0]
-    left: [-1.0, 0.0, 0.0]
-    right: [1.0, 0.0, 0.0]
 
 # --- Perception stack ---
 backbone:
@@ -55,7 +47,7 @@ decoder:
   sh_degree: 1
   out_dim: 23
   scale_min: 1.0e-6
-  scale_max: 4.0e-3
+  scale_max: 1.0e-2
   alpha_min: 0.0
   alpha_max: 1.0
   rot_min: -1.0
@@ -82,7 +74,7 @@ render:
 # --- Inference-only (checkpoint, outputs, PLY options) ---
 inference:
   # Default checkpoint (repo-root relative when running from avatar-benchmark/)
-  checkpoint: models/checkpoints/z6pwnr64-epoch=49-step=19100.ckpt
+  checkpoint: models/checkpoints/comfy-jazz.ckpt
   # subject_params: processed_root/<subject>/smplx_param.pkl
   # canonical_mesh: vertices from avatar_template.cano_mesh_path (same topology as avatar_template.path)
   smplx_source: subject_params

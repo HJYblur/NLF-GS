@@ -221,18 +221,16 @@ GHG**
 avatar-training
 logs/*
 wandb/*
-output/
+output**
 
 # Ignore model files
 models/smpl/
 models/smplx/
+models/lpips/
+models/checkpoints/
 
 # Ignore temporary files
 tmp/
-
-# Ignore checkpoints
-# checkpoints/
-# *.pt
 
 # Ignore debug files
 debug*
