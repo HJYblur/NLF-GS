@@ -75,7 +75,34 @@ Before the actual training, we need to render ground truth image from the scanne
 python src/data/preprocess_thuman.py
 ```
 
-All the preprocessed data will be saved under `processed` and `processed_test` automatically.
+All the preprocessed data will be saved under `processed` automatically, with the structure looks like:
+
+```text
+processed/
+├── 0001/
+│   ├── 0001_front.png
+│   ├── 0001_front_mask.png
+│   ├── 0001_back.png
+│   ├── 0001_back_mask.png
+│   ├── 0001_left.png
+│   ├── 0001_left_mask.png
+│   ├── 0001_right.png
+│   ├── 0001_right_mask.png
+│   └── smplx_param.pkl
+├── 0002/
+│   └── ...
+└── 0525/
+    ├── 0525_front.png
+    ├── 0525_front_mask.png
+    ├── 0525_back.png
+    ├── 0525_back_mask.png
+    ├── 0525_left.png
+    ├── 0525_left_mask.png
+    ├── 0525_right.png
+    ├── 0525_right_mask.png
+    └── smplx_param.pkl
+```
+
 
 ## Code Run
 ### Train 

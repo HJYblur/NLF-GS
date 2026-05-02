@@ -437,9 +437,15 @@ def generate_camera_mapping(
         )
         c2w_pyr = c2w_pyr_t.detach().cpu().numpy().astype(float)
 
+        # Extract rotation (3x3) and translation (3x1) from w2c matrix
+        R = w2c[:3, :3].tolist()
+        T = w2c[:3, 3].tolist()
+        
         payload = {
             "K": K.tolist(),
             "viewmat": w2c.tolist(),
+            "R": R,
+            "T": T,
             "coords": "+z",
             "type": "w2c",
             "c2w_pyrender": c2w_pyr.tolist(),
