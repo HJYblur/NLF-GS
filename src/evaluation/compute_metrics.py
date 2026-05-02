@@ -299,7 +299,7 @@ if __name__ == "__main__":
     import argparse
     
     parser = argparse.ArgumentParser(description="Compute evaluation metrics")
-    parser.add_argument("--config-path", default="configs/nlfgs_test.yaml", help="Path to config file")
+    parser.add_argument("--config-path", default="configs/nlfgs_gpu.yaml", help="Path to config file")
     parser.add_argument("--preds-root", default=None, help="Root directory of predictions (overrides config)")
     parser.add_argument("--target-root", default=None, help="Root directory of targets (overrides config)")
     parser.add_argument("--use-mask", action="store_true", default=True, help="Use mask for evaluation")

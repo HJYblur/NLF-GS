@@ -1,4 +1,5 @@
-# Section order (top → bottom): runtime → data & sensing → model stack → train loop → logging.
+# NLF-GS config: training, inference, animation, and metrics.
+# Section order (top → bottom): runtime → data & sensing → model stack → train loop → logging → inference → animation → metrics.
 # Keys are stable for code; reordering sections does not change behavior.
 
 # --- Runtime / process ---
@@ -12,6 +13,8 @@ data:
   raw_obj_root: data/THuman_2.0
   raw_smplx_root: data/THuman_2.0_smplx_paras
   processed_root: processed
+  train_subject_path: data/split_train.txt
+  val_subject_path: data/split_val.txt
   num_views: 4
   image_size: [1024,1024] # [W, H]
 
@@ -106,3 +109,27 @@ render:
   view_chunk_size: 1
   log_online: true
   log_stages: ["train", "val"]
+
+# --- Inference (inference.py): checkpoint, outputs, optional reconstruction PNGs / PLY ---
+inference:
+  checkpoint: models/checkpoints/faithful-pyramid.ckpt
+  smplx_source: subject_params # subject_params | canonical_mesh
+  output_dir: output
+  save_reconstruction: true
+  reconstruction_subdir: reconstruction
+  reconstruction_render_mode: full_orbit # full_orbit (24) | cardinal (4)
+  save_test_ply: false
+
+# --- Animation (anim.py) ---
+animation:
+  pose: reconstruction # reconstruction | tpose | custom
+  custom_pose_path: data/anim/custom_pose.pkl
+  display_mode: video # image | video
+  reconstruction_subdir: reconstruction
+  fps: 30
+  duration_seconds: 2
+  video_subdir: anim_video
+
+# --- Offline metrics (evaluation scripts) ---
+metrics:
+  lpips_cache_dir: models/lpips

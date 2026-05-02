@@ -1,7 +1,7 @@
 """
 Drive saved NLF-GS Gaussian **appearance** (inference ``.pt``) under new SMPL-X poses (geometry only).
 
-**Config** (``animation`` in YAML, e.g. ``configs/nlgfs_test.yaml``):
+**Config** (``animation`` in YAML, e.g. ``configs/nlfgs_gpu.yaml``):
 
 * ``pose``: ``reconstruction`` (pkl as stored) | ``tpose`` (body pose rest) | ``custom`` (``custom_pose_path`` pkl)
 * ``display_mode``: ``image`` — canonical orbit views into ``reconstruction_subdir``; ``video`` — spin, ``{prefix}_{subject}_{pose}.mp4`` in ``video_subdir``
@@ -217,7 +217,7 @@ def main():
     )
     parser.add_argument("--start-subject", type=str, required=True)
     parser.add_argument("--end-subject", type=str, required=True)
-    parser.add_argument("--config", type=str, default="configs/nlgfs_test.yaml")
+    parser.add_argument("--config", type=str, default="configs/nlfgs_gpu.yaml")
     parser.add_argument(
         "--bundle",
         type=str,
