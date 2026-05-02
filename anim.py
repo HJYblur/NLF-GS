@@ -3,7 +3,7 @@ Drive saved NLF-GS Gaussian **appearance** (inference ``.pt``) under new SMPL-X 
 
 **Config** (``animation`` in YAML, e.g. ``configs/nlfgs_gpu.yaml``):
 
-* ``pose``: ``reconstruction`` (pkl as stored) | ``tpose`` (body pose rest) | ``custom`` (``custom_pose_path`` pkl)
+* ``pose``: ``reconstruction`` (pkl as stored) | ``tpose`` (body pose rest) | ``custom`` (``custom_pose_path`` — motion only: pose joints from file, shape/scale/translation from subject ``smplx_param.pkl``)
 * ``display_mode``: ``image`` — canonical orbit views into ``reconstruction_subdir``; ``video`` — spin, ``{prefix}_{subject}_{pose}.mp4`` in ``video_subdir``
 * ``reconstruction_subdir`` (else ``inference.reconstruction_subdir``; default ``reconstruction``)
 * ``fps`` / ``duration_seconds`` (legacy: ``frame`` as fps, ``duration`` as seconds)
@@ -30,6 +30,8 @@ from src.avatar_utils.smplx_loader import (
     copy_smplx_params_tpose_rest,
     frame_count_for_duration_seconds,
     load_smplx_params_dict,
+    load_smplx_params_from_path,
+    merge_subject_identity_with_driver_pose,
     vertices_from_smplx_param_dict,
 )
 from src.training.nlfgs_builder import (
@@ -146,10 +148,17 @@ def _base_smplx_params(cfg: dict, subject: str, pose: str, pkl_override: Path | 
         rel = anim.get("custom_pose_path")
         if not rel:
             raise ValueError("animation.custom_pose_path is required when animation.pose is 'custom'")
-        pth = _resolve_path(str(rel))
-        if not pth.is_file():
-            raise FileNotFoundError(f"custom pose pickle not found: {pth}")
-        return load_smplx_params_dict(str(pth))
+        motion_path = _resolve_path(str(rel))
+        if not motion_path.is_file():
+            raise FileNotFoundError(f"custom pose file not found: {motion_path}")
+        driver = load_smplx_params_from_path(str(motion_path))
+        subj_pkl = pkl_override if pkl_override is not None else _resolve_smplx_pkl(cfg, subject)
+        if not subj_pkl.is_file():
+            raise FileNotFoundError(
+                f"Need subject SMPL-X pickle for identity (betas/scale/translation): {subj_pkl}"
+            )
+        subject_params = load_smplx_params_dict(str(subj_pkl))
+        return merge_subject_identity_with_driver_pose(subject_params, driver)
 
     pkl = pkl_override if pkl_override is not None else _resolve_smplx_pkl(cfg, subject)
     if not pkl.is_file():
@@ -242,7 +251,7 @@ def main():
         "--pkl",
         type=str,
         default=None,
-        help="Override path to subject smplx_param.pkl (reconstruction/tpose only).",
+        help="Override path to subject smplx_param.pkl (also used as identity for pose: custom).",
     )
     parser.add_argument(
         "--views-subdir",

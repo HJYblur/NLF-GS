@@ -1,4 +1,5 @@
 import copy
+import json
 import pickle
 from pathlib import Path
 
@@ -84,6 +85,89 @@ def load_smplx_params_dict(pkl_path: str) -> dict:
     """Load raw ``smplx_param.pkl`` dict (numpy arrays)."""
     with open(Path(pkl_path), "rb") as f:
         return pickle.load(f)
+
+
+def _coerce_smplx_params_dict(raw: dict) -> dict:
+    """Normalize a mapping (e.g. from JSON) to numpy float32 arrays like ``smplx_param.pkl``."""
+    out: dict = {}
+    for key, val in raw.items():
+        if key == "transl":
+            continue
+        if isinstance(val, (list, tuple)):
+            out[key] = numpy.asarray(val, dtype=numpy.float32)
+        elif isinstance(val, numpy.ndarray):
+            out[key] = val.astype(numpy.float32, copy=False)
+        elif numpy.isscalar(val):
+            out[key] = numpy.asarray([val], dtype=numpy.float32)
+    if "translation" not in out and "transl" in raw:
+        t = numpy.asarray(raw["transl"], dtype=numpy.float32).reshape(-1)
+        if t.size >= 3:
+            out["translation"] = t[:3].reshape(1, 3)
+    return out
+
+
+def load_smplx_params_from_path(path: str) -> dict:
+    """Load SMPL-X params from ``.pkl`` or ``.json`` (same semantic keys as ``smplx_param.pkl``).
+
+    JSON exports often use ``transl`` instead of ``translation``; that is normalized here so
+    :func:`vertices_from_smplx_param_dict` can run on the dict alone. For animation retargeting,
+    use :func:`merge_subject_identity_with_driver_pose` so world ``translation`` / ``scale`` come
+    from the subject, not the motion file.
+    """
+    p = Path(path)
+    if p.suffix.lower() == ".json":
+        with open(p, encoding="utf-8") as f:
+            raw = json.load(f)
+        if not isinstance(raw, dict):
+            raise TypeError(f"Expected JSON object in {path}, got {type(raw)}")
+        return _coerce_smplx_params_dict(raw)
+    return load_smplx_params_dict(str(p))
+
+
+# Pose tensors copied from a motion / driver pickle when retargeting onto a subject identity.
+_SMPLX_DRIVER_POSE_KEYS = (
+    "global_orient",
+    "body_pose",
+    "left_hand_pose",
+    "right_hand_pose",
+    "jaw_pose",
+    "leye_pose",
+    "reye_pose",
+)
+
+
+def merge_subject_identity_with_driver_pose(subject: dict, driver: dict) -> dict:
+    """Keep shape and normalization from ``subject``; apply only pose articulation from ``driver``.
+
+    Identity (shape, scale, world placement, facial identity in the SMPL-X sense) is taken from
+    ``subject`` — typically processed ``smplx_param.pkl`` for the avatar. ``driver`` may be raw
+    animation parameters (often different ``betas``, ``scale``, ``translation`` / ``transl``);
+    only :data:`_SMPLX_DRIVER_POSE_KEYS` are overlaid so Gaussians stay in the same normalized
+    frame as training while following the driver's motion.
+
+    Args:
+        subject: Dict with ``betas``, ``expression``, optional ``scale`` / ``translation``, and pose keys.
+        driver: Same schema; pose arrays must match ``subject`` shapes (same PCA layout).
+
+    Returns:
+        New dict suitable for :func:`vertices_from_smplx_param_dict`.
+    """
+    out = copy.deepcopy(subject)
+    for key in _SMPLX_DRIVER_POSE_KEYS:
+        if key not in driver:
+            continue
+        d = numpy.asarray(driver[key], dtype=numpy.float32)
+        if key not in out:
+            out[key] = d.copy()
+            continue
+        s = numpy.asarray(out[key], dtype=numpy.float32)
+        if d.shape != s.shape:
+            raise ValueError(
+                f"Driver pose '{key}' has shape {d.shape}, subject has {s.shape}. "
+                "Use the same SMPL-X model settings (e.g. num_pca_comps) for both."
+            )
+        out[key] = d.copy()
+    return out
 
 
 def copy_smplx_params_tpose_rest(params: dict) -> dict:

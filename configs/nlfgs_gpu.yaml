@@ -122,8 +122,8 @@ inference:
 
 # --- Animation (anim.py) ---
 animation:
-  pose: reconstruction # reconstruction | tpose | custom
-  custom_pose_path: data/anim/custom_pose.pkl
+  pose: reconstruction # reconstruction | tpose | custom (custom = pose from file + identity from subject smplx_param.pkl)
+  custom_pose_path: data/anim/custom_pose.pkl # .pkl or .json (e.g. mesh-*_smplx.json under data/anim)
   display_mode: video # image | video
   reconstruction_subdir: reconstruction
   fps: 30
