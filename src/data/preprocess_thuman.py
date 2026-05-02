@@ -505,16 +505,3 @@ if __name__ == "__main__":
         start_subject=args.start_subject,
         end_subject=args.end_subject,
     )
-
-    test_out_root = OUT_ROOT.parent / "processed_test"
-    test_out_root.mkdir(parents=True, exist_ok=True)
-    all_subjects = sorted(p.name for p in OUT_ROOT.iterdir() if p.is_dir())
-    test_subjects = all_subjects[-100:]
-    for subject in test_subjects:
-        src = Path(OUT_ROOT) / subject
-        dst = Path(test_out_root) / subject
-        if dst.exists():
-            print(f"Warning: {dst} already exists, skipping move of {src}")
-            continue
-        src.rename(dst)
-    print(f"Moved {len(test_subjects)} subjects to test folder: {test_out_root}")
