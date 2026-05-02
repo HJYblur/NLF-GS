@@ -1,8 +1,9 @@
 """
 Run NLF-GS inference and always save ``{subject}.pt``.
 
-When ``inference.save_reconstruction`` is true, also write ``reconstructed_{subject}.ply`` and four PNGs
-(``reconstructed_<view>.png``) under ``reconstruction_subdir``. ``save_test_ply`` writes
+When ``inference.save_reconstruction`` is true, also write ``reconstructed_{subject}.ply`` and RGB PNGs
+(``reconstructed_<azimuth_deg>.png``) under ``reconstruction_subdir``. The number of views (4 vs full orbit) is
+set by ``inference.reconstruction_render_mode``. ``save_test_ply`` writes
 ``<subject>_view.pt`` / ``.pkl`` (log scales, no offset).
 """
 from __future__ import annotations
@@ -28,7 +29,12 @@ from src.training.nlfgs_builder import (
 from src.avatar_utils.ply_loader import reconstruct_gaussian_avatar_as_ply
 from src.avatar_utils.smplx_loader import load_smplx_coord3d, vertices_3d_to_2d
 from src.avatar_utils.camera import load_camera_mapping
-from src.data.datasets import VIEW_ORDER, AvatarDataset
+from src.avatar_utils.view_config import (
+    MODEL_INPUT_VIEW_ORDER,
+    VIEW_ORDER,
+    reconstruction_view_names_from_config,
+)
+from src.data.datasets import AvatarDataset
 from src.encoder.avatar_template import AvatarTemplate
 from src.training.nlfgs import NlfGaussianModel
 
@@ -116,11 +122,18 @@ def _reconstruction_ply_filename(inf_cfg: dict, subject: str) -> str:
 
 
 def _reconstruction_png_prefix(inf_cfg: dict) -> str:
-    """PNG basename prefix for four views (``reconstructed_front.png``, …)."""
+    """PNG basename prefix for orbit views (``reconstructed_0.png``, …)."""
     raw = inf_cfg.get("reconstruction_save_prefix")
     if raw is not None and str(raw).strip() != "":
         return str(raw).strip()
     return "reconstructed"
+
+
+def _reconstruction_render_view_names(cfg: dict) -> list[str]:
+    """Camera labels for gsplat reconstruction PNGs (four cardinals vs full 15° orbit)."""
+    inf = cfg.get("inference") or {}
+    mode = inf.get("reconstruction_render_mode", "full_orbit")
+    return reconstruction_view_names_from_config(mode)
 
 
 def _inference_pt_filename(inf_cfg: dict, subject: str) -> str:
@@ -239,7 +252,7 @@ def run_inference(
     checkpoint: str,
     device: torch.device,
 ) -> tuple[torch.Tensor, dict[str, torch.Tensor], torch.Tensor, str, dict]:
-    """Run the forward pass for one subject (4 views). Returns fused Gaussians, vertices3d, subject, template avatar dict."""
+    """Run the forward pass for one subject using the four model views (0°/90°/180°/270°). Returns fused Gaussians, vertices3d, subject, template avatar dict."""
     data_cfg = cfg.get("data", {})
     data_root = data_cfg.get("processed_root", "data/processed_test")
     ds = AvatarDataset(root=data_root)
@@ -248,7 +261,9 @@ def run_inference(
     img_float = batch["images_float"].to(device)
     view_names = batch["view_names"]
     B = img_float.shape[0]
-    assert B == 4 and list(view_names) == VIEW_ORDER, "Inference expects 4 views in canonical order."
+    assert B == 4 and list(view_names) == MODEL_INPUT_VIEW_ORDER, (
+        "Inference expects data.num_views: 4 (four cardinal azimuths)."
+    )
 
     vertices3d = _vertices3d_for_inference(cfg, subject)
     vertices3d = vertices3d.to(device=device, dtype=torch.float32)
@@ -430,15 +445,19 @@ def main():
         recon_subdir = inf_cfg.get("reconstruction_subdir") or inf_cfg.get("canonical_views_subdir") or "reconstruction"
         views_dir = sub_dir / str(recon_subdir)
         recon_prefix = _reconstruction_png_prefix(inf_cfg)
+        recon_view_names = _reconstruction_render_view_names(cfg)
         assert renderer is not None
         renderer.render_canonical_views(
             gaussian_3d_gpu,
             gaussian_params_gpu,
             views_dir,
+            view_names=recon_view_names,
             save_prefix=recon_prefix,
         )
 
-        print(f"[{subject}] Saved {recon_prefix}_*.png under {views_dir.resolve()}")
+        print(
+            f"[{subject}] Saved {recon_prefix}_*.png ({len(recon_view_names)} views) under {views_dir.resolve()}"
+        )
 
 
 if __name__ == "__main__":

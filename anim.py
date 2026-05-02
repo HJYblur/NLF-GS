@@ -4,7 +4,7 @@ Drive saved NLF-GS Gaussian **appearance** (inference ``.pt``) under new SMPL-X 
 **Config** (``animation`` in YAML, e.g. ``configs/nlgfs_test.yaml``):
 
 * ``pose``: ``reconstruction`` (pkl as stored) | ``tpose`` (body pose rest) | ``custom`` (``custom_pose_path`` pkl)
-* ``display_mode``: ``image`` — four views into ``reconstruction_subdir``; ``video`` — spin, ``{prefix}_{subject}_{pose}.mp4`` in ``video_subdir``
+* ``display_mode``: ``image`` — canonical orbit views into ``reconstruction_subdir``; ``video`` — spin, ``{prefix}_{subject}_{pose}.mp4`` in ``video_subdir``
 * ``reconstruction_subdir`` (else ``inference.reconstruction_subdir``; default ``reconstruction``)
 * ``fps`` / ``duration_seconds`` (legacy: ``frame`` as fps, ``duration`` as seconds)
 * ``video_subdir`` (else ``inference.video_subdir``; default ``anim_video``)
@@ -199,7 +199,7 @@ def _render_spin_video(
             rgb = renderer.render(
                 fused,
                 gp_render,
-                view_name="front",
+                view_name="0",
                 save_folder_path=None,
             )
             frames_rgb.append(

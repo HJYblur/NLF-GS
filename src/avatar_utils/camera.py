@@ -1,9 +1,29 @@
 import os
 import json
+import math
 import trimesh
 import torch
 from typing import List, Optional, Sequence, Union, Dict, Tuple
 from avatar_utils.config import get_config
+
+# Legacy names → azimuth (deg); numeric labels like "15" are parsed directly.
+_LEGACY_VIEW_TO_DEG = {"front": 0.0, "right": 90.0, "back": 180.0, "left": 270.0}
+
+
+def direction_from_view_label(view_name: str, viewpoints_cfg: Optional[Dict] = None) -> torch.Tensor:
+    """Unit vector from origin toward the camera for orbit cameras (Y up, front at +Z)."""
+    viewpoints_cfg = viewpoints_cfg or {}
+    if view_name in viewpoints_cfg:
+        return torch.tensor(viewpoints_cfg[view_name], dtype=torch.float32)
+    if view_name in _LEGACY_VIEW_TO_DEG:
+        deg = _LEGACY_VIEW_TO_DEG[view_name]
+    else:
+        try:
+            deg = float(view_name)
+        except ValueError:
+            raise ValueError(f"Unsupported view_name: {view_name}") from None
+    rad = deg * (math.pi / 180.0)
+    return torch.tensor([math.sin(rad), 0.0, math.cos(rad)], dtype=torch.float32)
 
 
 def load_camera_mapping(
@@ -16,7 +36,8 @@ def load_camera_mapping(
     is missing or unreadable, falls back to computed values for that view.
 
     Expects JSON files under project-root/data/THuman_cameras named
-    thuman_<view>.json with keys: K (3x3), viewmat (4x4), and image_size.
+    ``thuman_<azimuth_deg>.json`` (e.g. ``thuman_0.json``, ``thuman_180.json``)
+    with keys: K (3x3), viewmat (4x4), and image_size.
     """
     # Resolve project root as two levels up from this file (src/...)
     project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
@@ -75,7 +96,8 @@ def camera_mapping(view_name: str) -> tuple[torch.Tensor, torch.Tensor]:
     """Get camera intrinsics and extrinsics for a given view name.
 
     Args:
-        view_name: Name of the view (e.g., 'front', 'back', 'left', 'right').
+        view_name: Azimuth label in degrees as string (e.g. ``'0'``, ``'180'``), or a legacy
+            name (``front``, ``back``, ``left``, ``right``).
 
     Returns:
         viewmats: Tensor of shape (B, 4, 4) representing the batched camera extrinsic matrix.
@@ -105,22 +127,11 @@ def camera_mapping(view_name: str) -> tuple[torch.Tensor, torch.Tensor]:
         0
     )  # (1,3,3)
 
-    # Map view name to direction vector from config
-    viewpoints_cfg = camera_cfg.get("viewpoints", {
-        "front": [0.0, 0.0, 1.0],
-        "back": [0.0, 0.0, -1.0],
-        "left": [-1.0, 0.0, 0.0],
-        "right": [1.0, 0.0, 0.0],
-    })
-    directions = {
-        k: torch.tensor(v, dtype=torch.float32) 
-        for k, v in viewpoints_cfg.items()
-    }
-    if view_name not in directions:
-        raise ValueError(f"Unsupported view_name: {view_name}")
-
+    viewpoints_cfg = camera_cfg.get("viewpoints")
+    if not isinstance(viewpoints_cfg, dict):
+        viewpoints_cfg = {}
     center = torch.zeros(3, dtype=torch.float32)
-    direction = directions[view_name]
+    direction = direction_from_view_label(view_name, viewpoints_cfg)
     # Use canonical distance from config
     distance = float(camera_cfg.get("distance", 1.2))
     eye = center + direction * distance

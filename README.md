@@ -80,28 +80,24 @@ All the preprocessed data will be saved under `processed` automatically, with th
 ```text
 processed/
 ├── 0001/
-│   ├── 0001_front.png
-│   ├── 0001_front_mask.png
-│   ├── 0001_back.png
-│   ├── 0001_back_mask.png
-│   ├── 0001_left.png
-│   ├── 0001_left_mask.png
-│   ├── 0001_right.png
-│   ├── 0001_right_mask.png
+│   ├── 0001_0.png
+│   ├── 0001_0_mask.png
+│   ├── 0001_15.png
+│   ├── 0001_15_mask.png
+│   │   # … every 15° through …
+│   ├── 0001_345.png
+│   ├── 0001_345_mask.png
 │   └── smplx_param.pkl
 ├── 0002/
 │   └── ...
 └── 0525/
-    ├── 0525_front.png
-    ├── 0525_front_mask.png
-    ├── 0525_back.png
-    ├── 0525_back_mask.png
-    ├── 0525_left.png
-    ├── 0525_left_mask.png
-    ├── 0525_right.png
-    ├── 0525_right_mask.png
+    ├── 0525_0.png
+    ├── 0525_0_mask.png
+    │   # … 24 azimuth views (0° = front, 180° = back) …
     └── smplx_param.pkl
 ```
+
+Camera intrinsics / extrinsics for Gaussian rendering are written under `data/THuman_cameras/` as `thuman_0.json` … `thuman_345.json` (run `preprocess_thuman` or call `generate_camera_mapping()` to create them).
 
 
 ## Code Run

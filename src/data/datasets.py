@@ -9,8 +9,8 @@ from avatar_utils.smplx_loader import load_smplx_coord3d
 from avatar_utils.smplx_loader import vertices_3d_to_2d
 from avatar_utils.camera import load_camera_mapping
 
+from avatar_utils.view_config import MODEL_INPUT_VIEW_ORDER, VIEW_ORDER
 
-VIEW_ORDER = ["front", "back", "left", "right"]
 IMG_EXTS = (".png", ".jpg", ".jpeg")
 
 
@@ -20,21 +20,19 @@ class AvatarDataset(Dataset):
 
         Layout per subject (new naming):
             processed/<subject>/
-                <subject>_front.(png|jpg|jpeg)
-                <subject>_front_mask.(png|jpg|jpeg)
-                <subject>_back.(png|jpg|jpeg)
-                <subject>_back_mask.(png|jpg|jpeg)
-                <subject>_left.(png|jpg|jpeg)
-                <subject>_left_mask.(png|jpg|jpeg)
-                <subject>_right.(png|jpg|jpeg)
-                <subject>_right_mask.(png|jpg|jpeg)
+                <subject>_<azimuth_deg>.(png|jpg|jpeg)   e.g. <subject>_0.png … <subject>_345.png
+                <subject>_<azimuth_deg>_mask.(png|jpg|jpeg)
                 
         Layout per smplx_param (preferred):
             processed/<subject>/<subject>_smplx.pkl
 
-    The dataset always loads all canonical views in VIEW_ORDER.
-    Training-time fusion behavior is controlled by `data.num_views` in the trainer
-    (1 = no fusion, 4 = fuse multi-view features).
+    The dataset requires all orbit renders on disk (``VIEW_ORDER``). When ``data.num_views``
+    is 4, each sample exposes only the four model inputs (0° / 90° / 180° / 270°, same roles as
+    the former front / right / back / left). When ``data.num_views`` is 1, all orbit views are
+    exposed for chunked single-view training.
+
+    Training-time fusion is controlled by ``data.num_views`` in the trainer
+    (1 = no fusion; 4 = fuse four-view features).
 
     Outputs per sample:
       - images_float: torch.FloatTensor [V, C, H, W], normalized to [0,1]
@@ -55,13 +53,16 @@ class AvatarDataset(Dataset):
         self.root = Path(root)
         data_cfg = cfg.get("data", {})
         self.smplx_root = Path(data_cfg.get("processed_root", "processed"))
+        self.num_views = int(data_cfg.get("num_views", 1))
+        if self.num_views not in (1, 4):
+            raise ValueError(f"data.num_views must be 1 or 4, got {self.num_views}")
 
         # Index subjects and required views
         self._records: List[Dict[str, Any]] = []
         self._index_subjects()
         if len(self._records) == 0:
             raise FileNotFoundError(
-                f"No valid subjects found under {self.root}. Expected files like front.jpg/png, etc."
+                f"No valid subjects found under {self.root}. Expected images `<subject>_<deg>.png` for deg in {{{VIEW_ORDER[0]}, …, {VIEW_ORDER[-1]}}}."
             )
 
     def __len__(self) -> int:
@@ -102,6 +103,13 @@ class AvatarDataset(Dataset):
         masks_float = torch.stack(masks_f, dim=0)  # [V,1,H,W]
 
         images_uint8 = (images_float.clamp(0.0, 1.0) * 255.0).round().to(torch.uint8)  # [V,C,H,W]
+
+        if self.num_views == 4:
+            sel = [VIEW_ORDER.index(v) for v in MODEL_INPUT_VIEW_ORDER]
+            images_float = images_float[sel]
+            masks_float = masks_float[sel]
+            images_uint8 = images_uint8[sel]
+            view_names = list(MODEL_INPUT_VIEW_ORDER)
 
         # Load normalized SMPL-X parameters exported by preprocessing.
         subject = rec["subject"]

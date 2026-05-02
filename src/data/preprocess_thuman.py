@@ -17,6 +17,7 @@ import pyrender
 from PIL import Image
 from avatar_utils.camera import look_at_viewmatrix
 from avatar_utils.config import get_config
+from avatar_utils.view_config import VIEW_ORDER, viewpoint_dict_from_azimuth
 
 
 def configure_pyopengl_platform(prefer_gpu=True):
@@ -51,24 +52,21 @@ def get_camera_config():
     cfg = get_config()
     camera_cfg = cfg.get("camera", {})
     data_cfg = cfg.get("data", {})
-    
+    vp_dict = viewpoint_dict_from_azimuth()
+    viewpoints = {k: list(vp_dict[k]) for k in VIEW_ORDER}
+
     return {
         "distance": float(camera_cfg.get("distance", 1.2)),
         "yfov_deg": float(camera_cfg.get("yfov_deg", 45.0)),
         "up": camera_cfg.get("up", [0.0, 1.0, 0.0]),
-        "viewpoints": camera_cfg.get("viewpoints", {
-            "front": [0.0, 0.0, 1.0],
-            "back": [0.0, 0.0, -1.0],
-            "left": [-1.0, 0.0, 0.0],
-            "right": [1.0, 0.0, 0.0],
-        }),
+        "viewpoints": viewpoints,
         "image_size": tuple(data_cfg.get("image_size", [1024, 1024])),
     }
 
 # Global constants from config
 CAMERA_CONFIG = get_camera_config()
 IMAGE_SIZE = CAMERA_CONFIG["image_size"]
-VIEWPOINTS = {k: np.array(v) for k, v in CAMERA_CONFIG["viewpoints"].items()}
+VIEWPOINTS = {k: np.array(v, dtype=np.float64) for k, v in CAMERA_CONFIG["viewpoints"].items()}
 CAMERA_MAP_ROOT = Path(__file__).resolve().parents[2] / "data" / "THuman_cameras"
 TARGET_SUBJECT_HEIGHT_M = 1.80
 
@@ -409,7 +407,8 @@ def generate_camera_mapping(
     center = np.zeros(3, dtype=float)
     up_world = np.array(CAMERA_CONFIG["up"], dtype=float)
 
-    for view_name, direction in VIEWPOINTS.items():
+    for view_name in VIEW_ORDER:
+        direction = VIEWPOINTS[view_name]
         eye = center + direction * distance
         up = up_world.copy()
         if np.allclose(np.cross(up, direction), 0.0):

@@ -1,4 +1,4 @@
-# Inference / test config (single subject, 4 views). Same section order as training configs + inference.
+# Inference / test config (single subject). Same section order as training configs + inference.
 # Default layout matches training `processed/` but under `data/processed_test/<subject>/`.
 
 # --- Runtime / process ---
@@ -82,6 +82,8 @@ inference:
   # If false, only ``<subject>.pt`` is written (plus optional ``save_test_ply`` bundles).
   save_reconstruction: true
   reconstruction_subdir: reconstruction
+  # Reconstruction RGB PNGs: ``full_orbit`` (24 views) or ``cardinal`` (4 views, same as model).
+  reconstruction_render_mode: full_orbit
   # PNG basenames: ``{reconstruction_save_prefix}_{view}.png`` (default prefix ``reconstructed``).
   # PLY: ``reconstructed_{subject}.ply`` unless ``reconstruction_ply_filename`` is set.
   # ``save_test_ply``: ``<subject>_view.pt`` / ``.pkl`` (log scales, no offset).
@@ -91,7 +93,7 @@ inference:
 animation:
   pose: reconstruction # reconstruction | tpose | custom
   custom_pose_path: data/anim/custom_pose.pkl
-  display_mode: video # image (4 views → reconstruction_subdir) | video (anim_video/*.mp4)
+  display_mode: video # image (orbit views → reconstruction_subdir) | video (anim_video/*.mp4)
   reconstruction_subdir: reconstruction
   fps: 30
   duration_seconds: 2

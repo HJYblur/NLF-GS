@@ -20,11 +20,7 @@ camera:
   distance: 3.0 # Camera distance from origin
   yfov_deg: 45.0 # Vertical field of view in degrees
   up: [0.0, 1.0, 0.0] # Default up vector
-  viewpoints: # Direction vectors for each canonical view
-    front: [0.0, 0.0, 1.0]
-    back: [0.0, 0.0, -1.0]
-    left: [-1.0, 0.0, 0.0]
-    right: [1.0, 0.0, 0.0]
+  # Orbit cameras are defined in code: 15° steps, 0° = front (+Z); filenames thuman_<deg>.json
 
 # --- Perception stack (image → features → Gaussians) ---
 backbone:

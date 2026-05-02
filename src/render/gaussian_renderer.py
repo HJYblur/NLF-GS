@@ -6,7 +6,7 @@ from gsplat import rasterization
 
 from avatar_utils.camera import load_camera_mapping
 from avatar_utils.config import get_config
-from data.datasets import VIEW_ORDER
+from avatar_utils.view_config import VIEW_ORDER
 
 
 class GsplatRenderer:
@@ -30,8 +30,7 @@ class GsplatRenderer:
         Args:
             gaussian_3d: Tensor of shape (N, 3) representing 3D Gaussian centers.
             gaussian_params: Dictionary containing Gaussian parameters such as scales, rotations, alphas, etc.
-            view_name: A single view name (e.g., 'front') or a list of view names
-                (e.g., ['front', 'left']).
+            view_name: A single view label (e.g. ``\"0\"`` or ``\"180\"``) or a list of labels.
 
         Returns:
             Rendered images as a tensor of shape (B, H, W, 3).
@@ -112,7 +111,7 @@ class GsplatRenderer:
         view_names: Optional[Sequence[str]] = None,
         save_prefix: str = "train",
     ) -> torch.Tensor:
-        """Inference helper: calls ``render`` with the four canonical views (same as training)."""
+        """Inference helper: renders all canonical orbit views (same order as training)."""
         views = list(view_names) if view_names is not None else list(VIEW_ORDER)
         out = Path(save_dir)
         out.mkdir(parents=True, exist_ok=True)
