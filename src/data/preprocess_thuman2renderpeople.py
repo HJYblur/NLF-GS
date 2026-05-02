@@ -529,8 +529,8 @@ def main() -> None:
     parser.add_argument(
         "--output-root",
         type=Path,
-        required=True,
-        help="Destination root; creates RenderPeople_recon/<date>/… under this path.",
+        default=Path("."),
+        help="Destination root; creates RenderPeople_recon/<date>/… under this path (default: current directory).",
     )
     parser.add_argument(
         "--date",
@@ -554,12 +554,18 @@ def main() -> None:
         "--subjects",
         type=str,
         default=None,
-        help="Comma-separated subject ids to export (overrides start/end range).",
+        help="Comma-separated subject ids to export (overrides --subject-list and start/end range).",
+    )
+    parser.add_argument(
+        "--subject-list",
+        type=Path,
+        default="data/split_val.txt",
+        help="Path to file with subject ids (one per line). Default: data/split_val.txt.",
     )
     parser.add_argument(
         "--num-pose-frames",
         type=int,
-        default=21,
+        default=1,
         help="Number of frame indices per camera (0000 …). Static data repeats the same image.",
     )
     parser.add_argument(
@@ -633,6 +639,9 @@ def main() -> None:
 
     if args.subjects:
         subject_ids = [s.strip() for s in args.subjects.split(",") if s.strip()]
+    elif args.subject_list.exists():
+        with open(args.subject_list, "r", encoding="utf-8") as f:
+            subject_ids = [s.strip() for s in f.readlines() if s.strip()]
     else:
         subject_ids = _parse_subject_range(
             args.processed_root, args.start_subject, args.end_subject

@@ -159,6 +159,9 @@ def compute_metrics(preds_root, target_root, config_path=None, use_mask=True, us
     ssims = []
     lpips_alex_scores = []
     lpips_vgg_scores = []
+    
+    # Track per-subject metrics
+    subject_metrics = {}
 
     # Set up LPIPS cache before loading models
     _setup_lpips_cache(config_path)
@@ -189,6 +192,15 @@ def compute_metrics(preds_root, target_root, config_path=None, use_mask=True, us
     for subject in subjects:
         subject_target_dir = os.path.join(target_root, subject)
         subject_preds_dir = os.path.join(preds_root, subject)
+        
+        # Initialize subject metrics tracking
+        if subject not in subject_metrics:
+            subject_metrics[subject] = {
+                "lpips_alex": [],
+                "lpips_vgg": [],
+                "psnr": [],
+                "ssim": []
+            }
 
         views = _extract_views(subject_target_dir)
         for view in views:
@@ -266,17 +278,24 @@ def compute_metrics(preds_root, target_root, config_path=None, use_mask=True, us
             ssims.append(sample_ssim)
             lpips_alex_scores.append(sample_lpips_alex)
             lpips_vgg_scores.append(sample_lpips_vgg)
+            
+            # Track per-subject metrics
+            subject_metrics[subject]["lpips_alex"].append(sample_lpips_alex)
+            subject_metrics[subject]["lpips_vgg"].append(sample_lpips_vgg)
+            subject_metrics[subject]["psnr"].append(sample_psnr)
+            subject_metrics[subject]["ssim"].append(sample_ssim)
 
     return (
         np.asarray(psnrs),
         np.asarray(ssims),
         np.asarray(lpips_alex_scores),
         np.asarray(lpips_vgg_scores),
+        subject_metrics,
     )
 
 
 def evaluate_metrics(preds_root, target_root, config_path=None, use_mask=True, use_crop=False):
-    psnrs, ssims, lpips_alex, lpips_vgg = compute_metrics(
+    psnrs, ssims, lpips_alex, lpips_vgg, subject_metrics = compute_metrics(
         preds_root=preds_root,
         target_root=target_root,
         config_path=config_path,
@@ -293,6 +312,35 @@ def evaluate_metrics(preds_root, target_root, config_path=None, use_mask=True, u
     print(f"LPIPS Alex mean {lpips_alex.mean()}", flush=True)
     print(f"LPIPS VGG mean {lpips_vgg.mean()}", flush=True)
     print(f"Evaluated samples: {psnrs.size}", flush=True)
+    
+    # Compute and display top 10 subjects by average LPIPS (lower is better)
+    print("\n###############################################", flush=True)
+    print("Top 10 subjects with lowest average LPIPS (Alex):", flush=True)
+    
+    subject_avg_lpips = []
+    for subject, metrics in subject_metrics.items():
+        if metrics["lpips_alex"]:
+            avg_lpips_alex = np.mean(metrics["lpips_alex"])
+            avg_lpips_vgg = np.mean(metrics["lpips_vgg"])
+            avg_psnr = np.mean(metrics["psnr"])
+            avg_ssim = np.mean(metrics["ssim"])
+            subject_avg_lpips.append({
+                "subject": subject,
+                "lpips_alex": avg_lpips_alex,
+                "lpips_vgg": avg_lpips_vgg,
+                "psnr": avg_psnr,
+                "ssim": avg_ssim,
+            })
+    
+    # Sort by LPIPS Alex (lower is better)
+    subject_avg_lpips.sort(key=lambda x: x["lpips_alex"])
+    
+    for i, item in enumerate(subject_avg_lpips[:10], 1):
+        print(
+            f"{i}. {item['subject']}: LPIPS(Alex)={item['lpips_alex']:.4f}, "
+            f"LPIPS(VGG)={item['lpips_vgg']:.4f}, PSNR={item['psnr']:.4f}, SSIM={item['ssim']:.4f}",
+            flush=True
+        )
 
 
 if __name__ == "__main__":
@@ -302,7 +350,7 @@ if __name__ == "__main__":
     parser.add_argument("--config-path", default="configs/nlfgs_test.yaml", help="Path to config file")
     parser.add_argument("--preds-root", default=None, help="Root directory of predictions (overrides config)")
     parser.add_argument("--target-root", default=None, help="Root directory of targets (overrides config)")
-    parser.add_argument("--use-mask", action="store_true", default=True, help="Use mask for evaluation")
+    parser.add_argument("--use-mask", action="store_true", default=False, help="Use mask for evaluation")
     parser.add_argument("--no-mask", dest="use_mask", action="store_false", help="Disable mask for evaluation")
     parser.add_argument("--use-crop", action="store_true", default=False, help="Use fixed crop for evaluation")
     
