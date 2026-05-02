@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Convert NLF-GS ``processed/`` THuman layout to a SHERF-style RenderPeople tree.
+"""Convert NLF-GS ``processed/`` THuman layout to a SHERF-compatible multi-view tree.
 
 SHERF loader contract (``sherf/training/RenderPeople_dataset.py``)
 ----------------------------------------------------------------
@@ -18,7 +18,7 @@ These paths and dtypes must match what the loader builds:
   - ``body_pose`` — ``(num_poses, 69)`` (23 joints × axis-angle).
   - ``transl`` — ``(num_poses, 3)``.
 
-This script writes that ``.npz`` layout (not raw ``smpl_param.pkl``).
+This script reads ``smpl_param.pkl`` and writes the above ``.npz`` layout for SHERF.
 
 SMPL source layout
 ------------------
@@ -26,18 +26,19 @@ The THuman preprocessing step now exports a per-subject ``smpl_param.pkl``
 alongside the rendered views. This script consumes that file directly and only
 repackages it into SHERF's ``refit_smpl_2nd.npz`` format.
 
-Source layout (see README):
-  processed/<id>/
-    <id>_front.png, ... _mask.png
-        smplx_param.pkl
-        smpl_param.pkl
+Source layout (matches ``preprocess_thuman.py``):
 
-Cameras (intrinsics / extrinsics) are read from ``data/THuman_cameras/thuman_<view>.json``
-(same JSON as :func:`avatar_utils.camera.load_camera_mapping`).
+  processed/<id>/
+    <id>_<azimuth>.png   # e.g. ``0001_0.png``, ``0001_15.png``, … (default 24 orbit views)
+    <id>_<azimuth>_mask.png
+    smpl_param.pkl
+
+Cameras are read from ``data/THuman_cameras/thuman_<azimuth>.json`` (e.g. ``thuman_0.json``),
+the same files ``preprocess_thuman.generate_camera_mapping`` writes.
 
 Target layout::
 
-  <out>/RenderPeople_recon/<date>/
+  <output-root>/thuman2.0_24views/
     human_list.txt
     seq_<6d>-thuman_<id>/
       cameras.json
@@ -45,16 +46,19 @@ Target layout::
       mask/camera0000/0000.png ...
       outputs_re_fitting/refit_smpl_2nd.npz
 
+Use ``--output-subdir`` to change ``thuman2.0_24views`` (e.g. if you export cardinal mode only).
+
 Notes
 -----
-* THuman preprocessing uses **4** views; SHERF RenderPeople defaults to **36**
-  cameras. Use ``--pad-cameras 36`` to repeat each real view across 9 slots
-  (same ``K,R,T`` and duplicated RGB/mask) so stock ``camera_view_num=36`` runs
-  without editing SHERF. Otherwise keep 4 cameras and set
-  ``camera_view_num=4`` in the SHERF dataset / shell script.
-* Poses are **static** here: the same RGB/mask is copied for every frame index
-  ``0000`` … ``num_pose_frames-1``, and SMPL arrays are repeated along the
-  time axis (SHERF indexes by ``pose_index``).
+* Default export uses the full orbit from ``avatar_utils.view_config`` (24 views at
+  15° steps, labels ``"0"`` … ``"345"``). Use ``--views-mode cardinal`` for legacy
+  four-view folders (``0``, ``90``, ``180``, ``270`` only).
+* SHERF RenderPeople defaults to **36** cameras. ``--pad-cameras N`` repeats each
+  exported view evenly; ``N`` must be a multiple of the number of views (24 or 4).
+  Example: ``--pad-cameras 72`` with orbit mode tiles each real camera 3× to fill
+  72 slots, or set ``camera_view_num=24`` in SHERF and skip padding.
+* Poses are **static**: the same RGB/mask is written for every pose index ``0000`` …,
+  and SMPL arrays are tiled along the time axis.
 """
 from __future__ import annotations
 
@@ -71,215 +75,26 @@ from PIL import Image
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from avatar_utils.config import get_config  # noqa: E402
-
-VIEW_ORDER = ("front", "back", "left", "right")
-
-
-def _scale_translation_from_pkl(params: dict) -> tuple[float, np.ndarray]:
-    scale = float(np.asarray(params.get("scale", 1.0), dtype=np.float64).reshape(-1)[0])
-    tr = np.asarray(params.get("translation", np.zeros(3)), dtype=np.float64).reshape(-1)
-    if tr.size != 3:
-        tr = np.pad(tr[: min(tr.size, 3)], (0, max(0, 3 - tr.size)), mode="constant")[:3]
-    return scale, tr.astype(np.float32)
+from avatar_utils.view_config import MODEL_INPUT_VIEW_ORDER, VIEW_ORDER as ORBIT_VIEW_ORDER  # noqa: E402
 
 
-def _smpl_pkl_to_sherf_smpl_dict(params: dict, num_frames: int) -> dict:
-    """Convert THuman ``smpl_param.pkl`` into SHERF's repeated-frame SMPL dict."""
-    betas = np.asarray(params.get("betas", np.zeros(10, dtype=np.float32)), dtype=np.float32).reshape(-1)
-    if betas.size < 10:
-        betas = np.pad(betas, (0, 10 - betas.size), mode="constant")
-    betas = betas[:10]
-
-    go = np.asarray(params.get("global_orient", np.zeros(3)), dtype=np.float32).reshape(-1)
-    if go.size < 3:
-        go = np.pad(go, (0, 3 - go.size), mode="constant")
-    go = go[:3]
-
-    body = np.asarray(params.get("body_pose", np.zeros(69)), dtype=np.float32).reshape(-1)
-    if body.size >= 69:
-        body_smpl = body[:69]
-    elif body.size == 63:
-        body_smpl = np.concatenate([body, np.zeros(6, dtype=np.float32)], axis=0)
-    else:
-        body_smpl = np.pad(body, (0, 69 - body.size), mode="constant")[:69]
-
-    if "transl" in params:
-        tr = np.asarray(params["transl"], dtype=np.float32).reshape(-1)
-    else:
-        tr = np.asarray(params.get("translation", np.zeros(3)), dtype=np.float32).reshape(-1)
-    if tr.size < 3:
-        tr = np.pad(tr, (0, 3 - tr.size), mode="constant")
-    tr = tr[:3]
-
-    return {
-        "betas": betas,
-        "global_orient": np.tile(go[None, :], (num_frames, 1)),
-        "body_pose": np.tile(body_smpl[None, :], (num_frames, 1)),
-        "transl": np.tile(tr[None, :], (num_frames, 1)),
-    }
+def _views_tuple(mode: str) -> tuple[str, ...]:
+    """Resolve which processed view suffixes to export (must match ``preprocess_thuman`` / THuman_cameras)."""
+    m = str(mode).strip().lower()
+    if m in ("orbit", "full", "24", "all"):
+        return tuple(ORBIT_VIEW_ORDER)
+    if m in ("cardinal", "four", "4", "model"):
+        return tuple(MODEL_INPUT_VIEW_ORDER)
+    raise ValueError(
+        f"views_mode must be 'orbit' (default {len(ORBIT_VIEW_ORDER)} azimuth steps) or "
+        f"'cardinal' (four views {list(MODEL_INPUT_VIEW_ORDER)}), got {mode!r}"
+    )
 
 
-def _fit_smpl_params_with_smplx(
-    params: dict,
-    smpl_model_path: Path,
-    smplx_model_path: Path,
-    *,
-    gender: str = "neutral",
-    num_pca_comps: int = 12,
-    num_steps: int = 300,
-    lr: float = 0.05,
-) -> dict | None:
-    """Fit ``smplx.SMPL`` pose/trans to ``smplx.SMPLX`` joints (first 22), using ``smplx`` + ``torch``.
-
-    Matches the joint frame implied by ``avatar_utils.smplx_loader`` (forward without
-    ``transl``, then ``joints * scale + translation``). SMPL and SMPL-X share the same
-    kinematic names for indices 0–21 (pelvis through wrists); SMPL hand joints 22–23
-    are not in the loss.
-    """
-    try:
-        import torch
-        import smplx as _smplx
-    except ImportError:
-        return None
-
-    if not smpl_model_path.exists():
-        return None
-
-    scale, trans_np = _scale_translation_from_pkl(params)
-    device = torch.device("cpu")
-    dtype = torch.float32
-
-    def _t(name: str, shape_tail: tuple[int, ...], default: float = 0.0) -> torch.Tensor:
-        if name not in params:
-            return torch.zeros((1,) + shape_tail, device=device, dtype=dtype)
-        a = np.asarray(params[name], dtype=np.float32)
-        a = np.reshape(a, (1, -1))
-        expected = int(np.prod(shape_tail))
-        if a.shape[1] != expected:
-            if a.shape[1] > expected:
-                a = a[:, :expected]
-            else:
-                a = np.pad(a, ((0, 0), (0, expected - a.shape[1])), mode="constant")
-        return torch.from_numpy(a.reshape((1,) + shape_tail)).to(device=device, dtype=dtype)
-
-    betas_x = _t("betas", (10,), 0.0)
-    if betas_x.shape[1] < 10:
-        betas_x = torch.nn.functional.pad(betas_x, (0, 10 - betas_x.shape[1]))
-    elif betas_x.shape[1] > 10:
-        betas_x = betas_x[:, :10]
-
-    go_x = _t("global_orient", (3,))
-    bp_x = _t("body_pose", (63,))
-    lhp = _t("left_hand_pose", (num_pca_comps,))
-    rhp = _t("right_hand_pose", (num_pca_comps,))
-    jaw = _t("jaw_pose", (3,))
-    leye = _t("leye_pose", (3,))
-    reye = _t("reye_pose", (3,))
-
-    try:
-        smplx_m = _smplx.SMPLX(
-            model_path=str(smplx_model_path),
-            gender=gender,
-            use_pca=True,
-            num_pca_comps=num_pca_comps,
-            flat_hand_mean=True,
-            batch_size=1,
-        ).to(device=device, dtype=dtype)
-        smpl_dir = smpl_model_path if smpl_model_path.is_dir() else smpl_model_path.parent
-        smpl_m = _smplx.SMPL(model_path=str(smpl_dir), gender=gender, batch_size=1).to(
-            device=device, dtype=dtype
-        )
-    except Exception:
-        return None
-
-    nec = int(getattr(smplx_m, "num_expression_coeffs", 10))
-    expr_np = np.asarray(params.get("expression", np.zeros(nec, dtype=np.float32)), dtype=np.float32).ravel()
-    if expr_np.size < nec:
-        expr_np = np.pad(expr_np, (0, nec - expr_np.size), mode="constant")
-    else:
-        expr_np = expr_np[:nec]
-    expr = torch.from_numpy(expr_np.reshape(1, -1)).to(device=device, dtype=dtype)
-
-    smplx_m.eval()
-    smpl_m.eval()
-
-    with torch.no_grad():
-        out_x = smplx_m(
-            betas=betas_x,
-            global_orient=go_x,
-            body_pose=bp_x,
-            left_hand_pose=lhp,
-            right_hand_pose=rhp,
-            jaw_pose=jaw,
-            leye_pose=leye,
-            reye_pose=reye,
-            expression=expr,
-            return_verts=False,
-        )
-        target_j = out_x.joints[:, :22, :].clone() * float(scale) + torch.from_numpy(trans_np).to(
-            device=device, dtype=dtype
-        ).view(1, 1, 3)
-
-    betas_s = betas_x.detach()
-
-    go = torch.nn.Parameter(go_x.clone())
-    bp_flat = bp_x.reshape(1, -1)
-    if bp_flat.shape[1] < 69:
-        bp_flat = torch.nn.functional.pad(bp_flat, (0, 69 - bp_flat.shape[1]))
-    else:
-        bp_flat = bp_flat[:, :69]
-    bp = torch.nn.Parameter(bp_flat.clone())
-
-    tr_init = np.asarray(params.get("transl", params.get("translation", np.zeros(3))), dtype=np.float32).reshape(-1)
-    if tr_init.size < 3:
-        tr_init = np.pad(tr_init, (0, 3 - tr_init.size), mode="constant")
-    tr = torch.nn.Parameter(torch.from_numpy(tr_init[:3]).view(1, 3).to(device=device, dtype=dtype))
-
-    opt = torch.optim.Adam([go, bp, tr], lr=lr)
-    for _ in range(num_steps):
-        out_s = smpl_m(
-            betas=betas_s,
-            global_orient=go,
-            body_pose=bp,
-            transl=tr,
-            return_verts=False,
-        )
-        pred = out_s.joints[:, :22, :]
-        loss = torch.mean((pred - target_j) ** 2)
-        if not torch.isfinite(loss):
-            return None
-        opt.zero_grad(set_to_none=True)
-        loss.backward()
-        opt.step()
-
-    with torch.no_grad():
-        go_np = go.detach().cpu().numpy().astype(np.float32).reshape(3)
-        bp_np = bp.detach().cpu().numpy().astype(np.float32).reshape(69)
-        tr_np = tr.detach().cpu().numpy().astype(np.float32).reshape(3)
-
-    return {
-        "betas": betas_s.detach().cpu().numpy().astype(np.float32).reshape(10),
-        "global_orient": np.tile(go_np[None, :], (1, 1)),  # caller expands frames
-        "body_pose": np.tile(bp_np[None, :], (1, 1)),
-        "transl": np.tile(tr_np[None, :], (1, 1)),
-    }
-
-
-def _smpl_pkl_to_sherf_smpl_dict(
-    params: dict,
-    num_frames: int,
-    *,
-    smpl_model_path: Path | None,
-    smplx_model_path: Path,
-    smpl_fit_steps: int,
-    smpl_fit_lr: float,
-    gender: str,
-    num_pca_comps: int,
-    verbose: bool,
-) -> dict:
-    """Build ``smpl`` dict for ``refit_smpl_2nd.npz`` from ``smpl_param.pkl`` directly."""
-    if verbose and (smpl_fit_steps > 0 or smpl_model_path is not None):
-        print("  SMPL params: using smpl_param.pkl directly; SMPL-X fitting is disabled.")
+def _smpl_pkl_to_sherf_smpl_dict(params: dict, num_frames: int, *, verbose: bool = False) -> dict:
+    """Build ``smpl`` dict for ``refit_smpl_2nd.npz`` from ``smpl_param.pkl`` (SHERF ``prepare_smpl_params`` layout)."""
+    if verbose:
+        print("  SMPL params: from smpl_param.pkl → refit_smpl_2nd.npz")
 
     betas = np.asarray(params.get("betas", np.zeros(10, dtype=np.float32)), dtype=np.float32).reshape(-1)
     if betas.size < 10:
@@ -322,17 +137,6 @@ def _default_paths() -> tuple[Path, Path]:
     project_root = Path(__file__).resolve().parents[2]
     camera_dir = project_root / "data" / "THuman_cameras"
     return processed, camera_dir
-
-
-def _default_smpl_model_path(project_root: Path) -> Path | None:
-    for rel in (
-        Path("models") / "smpl" / "SMPL_NEUTRAL.pkl",
-        Path("assets") / "SMPL_NEUTRAL.pkl",
-    ):
-        p = project_root / rel
-        if p.is_file():
-            return p
-    return None
 
 
 def _load_thuman_camera_json(camera_dir: Path, view: str) -> dict:
@@ -406,12 +210,6 @@ def _export_one_subject(
     pad_cameras: int | None,
     jpeg_quality: int,
     *,
-    smpl_model_path: Path | None,
-    smplx_model_path: Path,
-    smpl_fit_steps: int,
-    smpl_fit_lr: float,
-    smpl_gender: str,
-    smplx_num_pca_comps: int,
     verbose: bool,
 ) -> None:
     src = processed_root / subject_id
@@ -466,18 +264,8 @@ def _export_one_subject(
     if not pkl_path.exists():
         raise FileNotFoundError(f"Missing {pkl_path}")
     with open(pkl_path, "rb") as f:
-        smplx_params = pickle.load(f)
-    smpl_dict = _smpl_pkl_to_sherf_smpl_dict(
-        smplx_params,
-        num_pose_frames,
-        smpl_model_path=smpl_model_path,
-        smplx_model_path=smplx_model_path,
-        smpl_fit_steps=smpl_fit_steps,
-        smpl_fit_lr=smpl_fit_lr,
-        gender=smpl_gender,
-        num_pca_comps=smplx_num_pca_comps,
-        verbose=verbose,
-    )
+        smpl_params = pickle.load(f)
+    smpl_dict = _smpl_pkl_to_sherf_smpl_dict(smpl_params, num_pose_frames, verbose=verbose)
     _save_sherf_smpl_npz(fit_root / "refit_smpl_2nd.npz", smpl_dict)
 
 
@@ -508,7 +296,7 @@ def main() -> None:
     default_proc, default_cam = _default_paths()
     project_root = Path(__file__).resolve().parents[2]
     parser = argparse.ArgumentParser(
-        description="Convert processed THuman folders to SHERF RenderPeople-style layout."
+        description="Convert processed THuman folders to a SHERF-style dataset layout."
     )
     parser.add_argument(
         "--processed-root",
@@ -520,19 +308,20 @@ def main() -> None:
         "--camera-dir",
         type=Path,
         default=default_cam,
-        help="Directory with thuman_<view>.json (default: <project>/data/THuman_cameras).",
+        help="Directory with thuman_<azimuth>.json (default: <project>/data/THuman_cameras).",
     )
     parser.add_argument(
         "--output-root",
         type=Path,
         default=Path("."),
-        help="Destination root; creates RenderPeople_recon/<date>/… under this path (default: current directory).",
+        help="Destination root; sequences and human_list.txt go under "
+        "<output-root>/<output-subdir>/ (default: current directory).",
     )
     parser.add_argument(
-        "--date",
+        "--output-subdir",
         type=str,
-        default="20230228",
-        help="Subfolder name under RenderPeople_recon/ (default matches SHERF examples).",
+        default="thuman2.0_24views",
+        help="Folder name under --output-root (default: thuman2.0_24views).",
     )
     parser.add_argument(
         "--start-subject",
@@ -568,7 +357,8 @@ def main() -> None:
         "--pad-cameras",
         type=int,
         default=None,
-        help="If set (e.g. 36), repeat K,R,T and images to this many cameras; must be a multiple of 4.",
+        help="Repeat K,R,T and images to N cameras; N must be a multiple of the "
+        "exported view count (24 in orbit mode, 4 in cardinal). E.g. 72 = 3×24 for SHERF.",
     )
     parser.add_argument(
         "--jpeg-quality",
@@ -583,55 +373,21 @@ def main() -> None:
         help="Sequence folder prefix (default: seq).",
     )
     parser.add_argument(
-        "--smplx-model-path",
-        type=Path,
-        default=project_root / "models" / "smplx",
-        help="Directory with SMPLX_NEUTRAL.pkl (same as NLF-GS training).",
-    )
-    parser.add_argument(
-        "--smpl-model-path",
-        type=Path,
-        default=_default_smpl_model_path(project_root),
-        help="Path to SMPL_NEUTRAL.pkl (or .npz) or its parent directory. "
-        "Default: auto-detect under models/smpl/ or assets/.",
-    )
-    parser.add_argument(
-        "--smpl-fit-steps",
-        type=int,
-        default=300,
-        help="Adam steps for SMPL joint fit (0 = heuristic SMPL-X→SMPL only).",
-    )
-    parser.add_argument(
-        "--smpl-fit-lr",
-        type=float,
-        default=0.05,
-        help="Learning rate for SMPL fit.",
-    )
-    parser.add_argument(
-        "--smpl-gender",
+        "--views-mode",
         type=str,
-        default="neutral",
-        help="Gender string for smplx.SMPL / SMPLX constructors.",
-    )
-    parser.add_argument(
-        "--smplx-num-pca-comps",
-        type=int,
-        default=12,
-        help="Hand PCA components (must match preprocessing / smplx_loader).",
+        choices=("orbit", "cardinal"),
+        default="orbit",
+        help="orbit: 24 azimuth views (0,15,…,345) matching preprocess_thuman; "
+        "cardinal: four views 0/90/180/270 only (legacy processed folders).",
     )
     parser.add_argument(
         "--quiet",
         action="store_true",
-        help="Suppress per-subject SMPL conversion messages.",
+        help="Suppress per-subject messages.",
     )
     args = parser.parse_args()
 
-    if (
-        args.smpl_fit_steps > 0
-        and args.smpl_model_path is not None
-        and not args.smplx_model_path.exists()
-    ):
-        raise SystemExit(f"--smplx-model-path does not exist: {args.smplx_model_path}")
+    export_views = _views_tuple(args.views_mode)
 
     if args.subjects:
         subject_ids = [s.strip() for s in args.subjects.split(",") if s.strip()]
@@ -646,8 +402,8 @@ def main() -> None:
     if not subject_ids:
         raise SystemExit("No subjects found to export (check --processed-root and filters).")
 
-    recon_root = args.output_root / "RenderPeople_recon" / args.date
-    recon_root.mkdir(parents=True, exist_ok=True)
+    out_root = (args.output_root / args.output_subdir).resolve()
+    out_root.mkdir(parents=True, exist_ok=True)
 
     verbose = not args.quiet
     lines: list[str] = []
@@ -657,28 +413,22 @@ def main() -> None:
         except ValueError:
             n = 0
         seq_name = f"{args.seq_prefix}_{n:06d}-thuman_{sid}"
-        seq_dir = recon_root / seq_name
+        seq_dir = out_root / seq_name
         print(f"Exporting {sid} -> {seq_dir}")
         _export_one_subject(
             sid,
             args.processed_root,
             args.camera_dir,
             seq_dir,
-            VIEW_ORDER,
+            export_views,
             args.num_pose_frames,
             args.pad_cameras,
             args.jpeg_quality,
-            smpl_model_path=args.smpl_model_path,
-            smplx_model_path=args.smplx_model_path,
-            smpl_fit_steps=args.smpl_fit_steps,
-            smpl_fit_lr=args.smpl_fit_lr,
-            smpl_gender=args.smpl_gender,
-            smplx_num_pca_comps=args.smplx_num_pca_comps,
             verbose=verbose,
         )
         lines.append(seq_name)
 
-    list_path = recon_root / "human_list.txt"
+    list_path = out_root / "human_list.txt"
     with open(list_path, "w", encoding="utf-8") as f:
         f.write("\n".join(lines) + "\n")
     print(f"Wrote {len(lines)} entries to {list_path}")
