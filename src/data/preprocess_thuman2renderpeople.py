@@ -18,23 +18,19 @@ These paths and dtypes must match what the loader builds:
   - ``body_pose`` — ``(num_poses, 69)`` (23 joints × axis-angle).
   - ``transl`` — ``(num_poses, 3)``.
 
-This script writes that ``.npz`` layout (not raw ``smplx_param.pkl``).
+This script writes that ``.npz`` layout (not raw ``smpl_param.pkl``).
 
-SMPL from SMPL-X (``smplx`` + ``torch``)
-----------------------------------------
-Padding SMPL-X ``body_pose`` (63) to SMPL (69) is only a coarse fallback.
-If ``--smpl-model-path`` points to a SMPL ``SMPL_NEUTRAL.pkl`` (or a folder
-containing it) and ``--smpl-fit-steps`` > 0, the script runs a short Adam fit
-so ``smplx.SMPL`` joint positions (first 22 joints, pelvis through wrists)
-match ``smplx.SMPLX`` joints after the same ``scale`` / ``translation`` as
-``avatar_utils.smplx_loader`` uses on vertices. This uses the **smplx**
-package only (no change to the SHERF loader). You still need a registered
-SMPL neutral model file from https://smpl.is.tue.mpg.de/ .
+SMPL source layout
+------------------
+The THuman preprocessing step now exports a per-subject ``smpl_param.pkl``
+alongside the rendered views. This script consumes that file directly and only
+repackages it into SHERF's ``refit_smpl_2nd.npz`` format.
 
 Source layout (see README):
   processed/<id>/
     <id>_front.png, ... _mask.png
-    smplx_param.pkl
+        smplx_param.pkl
+        smpl_param.pkl
 
 Cameras (intrinsics / extrinsics) are read from ``data/THuman_cameras/thuman_<view>.json``
 (same JSON as :func:`avatar_utils.camera.load_camera_mapping`).
@@ -87,43 +83,39 @@ def _scale_translation_from_pkl(params: dict) -> tuple[float, np.ndarray]:
     return scale, tr.astype(np.float32)
 
 
-def _smplx_pkl_to_sherf_smpl_dict_heuristic(params: dict, num_frames: int) -> dict:
-    """SMPL npz dict via padding / slicing only (no ``smplx.SMPL`` fit)."""
-    betas = np.asarray(params.get("betas", np.zeros(10, dtype=np.float32)), dtype=np.float32).ravel()
+def _smpl_pkl_to_sherf_smpl_dict(params: dict, num_frames: int) -> dict:
+    """Convert THuman ``smpl_param.pkl`` into SHERF's repeated-frame SMPL dict."""
+    betas = np.asarray(params.get("betas", np.zeros(10, dtype=np.float32)), dtype=np.float32).reshape(-1)
     if betas.size < 10:
         betas = np.pad(betas, (0, 10 - betas.size), mode="constant")
     betas = betas[:10]
 
     go = np.asarray(params.get("global_orient", np.zeros(3)), dtype=np.float32).reshape(-1)
-    if go.size != 3:
-        go = go[:3] if go.size > 3 else np.pad(go, (0, 3 - go.size), mode="constant")
+    if go.size < 3:
+        go = np.pad(go, (0, 3 - go.size), mode="constant")
+    go = go[:3]
 
-    bx = np.asarray(params.get("body_pose", np.zeros(63)), dtype=np.float32).reshape(-1)
-    if bx.size >= 69:
-        body_smpl = bx[:69]
-    elif bx.size == 63:
-        body_smpl = np.concatenate([bx, np.zeros(6, dtype=np.float32)], axis=0)
+    body = np.asarray(params.get("body_pose", np.zeros(69)), dtype=np.float32).reshape(-1)
+    if body.size >= 69:
+        body_smpl = body[:69]
+    elif body.size == 63:
+        body_smpl = np.concatenate([body, np.zeros(6, dtype=np.float32)], axis=0)
     else:
-        body_smpl = np.pad(bx, (0, max(0, 69 - bx.size)), mode="constant")[:69]
+        body_smpl = np.pad(body, (0, 69 - body.size), mode="constant")[:69]
 
     if "transl" in params:
         tr = np.asarray(params["transl"], dtype=np.float32).reshape(-1)
     else:
         tr = np.asarray(params.get("translation", np.zeros(3)), dtype=np.float32).reshape(-1)
-    if tr.size >= 3:
-        tr = tr[:3]
-    else:
+    if tr.size < 3:
         tr = np.pad(tr, (0, 3 - tr.size), mode="constant")
-
-    global_orient = np.tile(go[None, :], (num_frames, 1))
-    body_pose = np.tile(body_smpl[None, :], (num_frames, 1))
-    transl = np.tile(tr[None, :], (num_frames, 1))
+    tr = tr[:3]
 
     return {
         "betas": betas,
-        "global_orient": global_orient,
-        "body_pose": body_pose,
-        "transl": transl,
+        "global_orient": np.tile(go[None, :], (num_frames, 1)),
+        "body_pose": np.tile(body_smpl[None, :], (num_frames, 1)),
+        "transl": np.tile(tr[None, :], (num_frames, 1)),
     }
 
 
@@ -273,7 +265,7 @@ def _fit_smpl_params_with_smplx(
     }
 
 
-def _smplx_pkl_to_sherf_smpl_dict(
+def _smpl_pkl_to_sherf_smpl_dict(
     params: dict,
     num_frames: int,
     *,
@@ -285,38 +277,42 @@ def _smplx_pkl_to_sherf_smpl_dict(
     num_pca_comps: int,
     verbose: bool,
 ) -> dict:
-    """Build ``smpl`` dict for ``refit_smpl_2nd.npz``; optional ``smplx``+``torch`` SMPL fit."""
-    if smpl_fit_steps <= 0:
-        return _smplx_pkl_to_sherf_smpl_dict_heuristic(params, num_frames)
+    """Build ``smpl`` dict for ``refit_smpl_2nd.npz`` from ``smpl_param.pkl`` directly."""
+    if verbose and (smpl_fit_steps > 0 or smpl_model_path is not None):
+        print("  SMPL params: using smpl_param.pkl directly; SMPL-X fitting is disabled.")
 
-    fit: dict | None = None
-    if smpl_model_path is not None:
-        fit = _fit_smpl_params_with_smplx(
-            params,
-            smpl_model_path,
-            smplx_model_path,
-            gender=gender,
-            num_pca_comps=num_pca_comps,
-            num_steps=smpl_fit_steps,
-            lr=smpl_fit_lr,
-        )
-    if fit is not None:
-        out = {
-            "betas": fit["betas"],
-            "global_orient": np.tile(fit["global_orient"], (num_frames, 1)),
-            "body_pose": np.tile(fit["body_pose"], (num_frames, 1)),
-            "transl": np.tile(fit["transl"], (num_frames, 1)),
-        }
-        if verbose:
-            print("  SMPL params: smplx.SMPL joint fit to SMPL-X (first 22 joints).")
-        return out
+    betas = np.asarray(params.get("betas", np.zeros(10, dtype=np.float32)), dtype=np.float32).reshape(-1)
+    if betas.size < 10:
+        betas = np.pad(betas, (0, 10 - betas.size), mode="constant")
+    betas = betas[:10]
 
-    if verbose and smpl_model_path is not None:
-        print(
-            "  SMPL params: heuristic fallback (check torch, smplx, SMPL/SMPL-X model paths)."
-        )
+    go = np.asarray(params.get("global_orient", np.zeros(3)), dtype=np.float32).reshape(-1)
+    if go.size < 3:
+        go = np.pad(go, (0, 3 - go.size), mode="constant")
+    go = go[:3]
 
-    return _smplx_pkl_to_sherf_smpl_dict_heuristic(params, num_frames)
+    body = np.asarray(params.get("body_pose", np.zeros(69)), dtype=np.float32).reshape(-1)
+    if body.size >= 69:
+        body_smpl = body[:69]
+    elif body.size == 63:
+        body_smpl = np.concatenate([body, np.zeros(6, dtype=np.float32)], axis=0)
+    else:
+        body_smpl = np.pad(body, (0, 69 - body.size), mode="constant")[:69]
+
+    if "transl" in params:
+        tr = np.asarray(params["transl"], dtype=np.float32).reshape(-1)
+    else:
+        tr = np.asarray(params.get("translation", np.zeros(3)), dtype=np.float32).reshape(-1)
+    if tr.size < 3:
+        tr = np.pad(tr, (0, 3 - tr.size), mode="constant")
+    tr = tr[:3]
+
+    return {
+        "betas": betas,
+        "global_orient": np.tile(go[None, :], (num_frames, 1)),
+        "body_pose": np.tile(body_smpl[None, :], (num_frames, 1)),
+        "transl": np.tile(tr[None, :], (num_frames, 1)),
+    }
 
 
 def _default_paths() -> tuple[Path, Path]:
@@ -466,12 +462,12 @@ def _export_one_subject(
             rgb.save(img_root / cdir / f"{stem}.jpg", quality=jpeg_quality, optimize=True)
             msk.save(mask_root / cdir / f"{stem}.png")
 
-    pkl_path = src / "smplx_param.pkl"
+    pkl_path = src / "smpl_param.pkl"
     if not pkl_path.exists():
         raise FileNotFoundError(f"Missing {pkl_path}")
     with open(pkl_path, "rb") as f:
         smplx_params = pickle.load(f)
-    smpl_dict = _smplx_pkl_to_sherf_smpl_dict(
+    smpl_dict = _smpl_pkl_to_sherf_smpl_dict(
         smplx_params,
         num_pose_frames,
         smpl_model_path=smpl_model_path,

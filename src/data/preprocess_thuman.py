@@ -70,6 +70,7 @@ CAMERA_CONFIG = get_camera_config()
 IMAGE_SIZE = CAMERA_CONFIG["image_size"]
 VIEWPOINTS = {k: np.array(v) for k, v in CAMERA_CONFIG["viewpoints"].items()}
 CAMERA_MAP_ROOT = Path(__file__).resolve().parents[2] / "data" / "THuman_cameras"
+SMPL_SOURCE_ROOT = Path(__file__).resolve().parents[2] / "data" / "THuman2.0_smpl"
 TARGET_SUBJECT_HEIGHT_M = 1.80
 
 
@@ -279,6 +280,40 @@ def _export_subject_smplx(
     print(f"Wrote normalized SMPL-X params: {out_path}")
 
 
+def _export_subject_smpl(
+    identity: str,
+    out_dir: Path,
+    scale: float,
+    translation: np.ndarray,
+) -> None:
+    """Apply mesh normalization transform to source smpl params and export it."""
+    src_pkl = SMPL_SOURCE_ROOT / f"{identity}_smpl.pkl"
+    if not src_pkl.exists():
+        print(f"Skipping SMPL export for {identity}: missing {src_pkl}")
+        return
+
+    with open(src_pkl, "rb") as f:
+        params = pickle.load(f)
+
+    old_scale = float(np.asarray(params.get("scale", 1.0)).reshape(-1)[0])
+    old_translation = np.asarray(params.get("transl", np.zeros(3)), dtype=np.float64).reshape(-1)
+    if old_translation.shape[0] != 3:
+        old_translation = old_translation[:3]
+        if old_translation.shape[0] < 3:
+            old_translation = np.pad(old_translation, (0, 3 - old_translation.shape[0]), mode="constant")
+
+    new_scale = old_scale * scale
+    new_translation = old_translation * scale + translation
+    params["scale"] = np.array([new_scale], dtype=np.float32)
+    params["transl"] = new_translation.astype(np.float32).reshape(1, 3)
+    params["translation"] = new_translation.astype(np.float32).reshape(1, 3)
+
+    out_path = out_dir / "smpl_param.pkl"
+    with open(out_path, "wb") as f:
+        pickle.dump(params, f)
+    print(f"Wrote normalized SMPL params: {out_path}")
+
+
 def _render_views(
     meshes: list[trimesh.Trimesh],
     out_dir: Path,
@@ -481,6 +516,7 @@ def preprocess_thuman(
             continue
         meshes, scale, translation = _normalize_meshes_for_rendering(meshes)
         _export_subject_smplx(identity, target_dir, scale, translation)
+        _export_subject_smpl(identity, target_dir, scale, translation)
         texture_path = _find_texture_for_obj(obj_path)
         _render_views(meshes, target_dir, texture_path, identity)
         print(f"Rendered {identity}")
