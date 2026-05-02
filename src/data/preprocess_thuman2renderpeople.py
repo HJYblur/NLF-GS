@@ -214,7 +214,8 @@ def _export_one_subject(
 ) -> None:
     src = processed_root / subject_id
     if not src.is_dir():
-        raise FileNotFoundError(f"Missing processed subject dir: {src}")
+        print("  Skipping missing subject folder:", src)
+        return False
 
     seq_dir.mkdir(parents=True, exist_ok=True)
     img_root = seq_dir / "img"
@@ -267,6 +268,7 @@ def _export_one_subject(
         smpl_params = pickle.load(f)
     smpl_dict = _smpl_pkl_to_sherf_smpl_dict(smpl_params, num_pose_frames, verbose=verbose)
     _save_sherf_smpl_npz(fit_root / "refit_smpl_2nd.npz", smpl_dict)
+    return True
 
 
 def _parse_subject_range(
@@ -415,7 +417,7 @@ def main() -> None:
         seq_name = f"{args.seq_prefix}_{n:06d}-thuman_{sid}"
         seq_dir = out_root / seq_name
         print(f"Exporting {sid} -> {seq_dir}")
-        _export_one_subject(
+        sucess_export = _export_one_subject(
             sid,
             args.processed_root,
             args.camera_dir,
@@ -426,7 +428,7 @@ def main() -> None:
             args.jpeg_quality,
             verbose=verbose,
         )
-        lines.append(seq_name)
+        lines.append(seq_name) if sucess_export else print(f"  Skipped {sid} due to missing data.")
 
     list_path = out_root / "human_list.txt"
     with open(list_path, "w", encoding="utf-8") as f:
