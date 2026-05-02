@@ -44,8 +44,8 @@ avatar_template:
 decoder:
   in_dim: 768
   hidden: 256
-  sh_degree: 1
-  out_dim: 23
+  sh_degree: 2
+  out_dim: 38
   scale_min: 1.0e-6
   scale_max: 1.0e-2
   alpha_min: 0.0
@@ -74,7 +74,7 @@ render:
 # --- Inference-only (checkpoint, outputs, PLY options) ---
 inference:
   # Default checkpoint (repo-root relative when running from avatar-benchmark/)
-  checkpoint: models/checkpoints/comfy-jazz.ckpt
+  checkpoint: models/checkpoints/faithful-pyramid.ckpt
   # subject_params: processed_root/<subject>/smplx_param.pkl
   # canonical_mesh: vertices from avatar_template.cano_mesh_path (same topology as avatar_template.path)
   smplx_source: subject_params
