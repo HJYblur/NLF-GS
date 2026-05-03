@@ -76,7 +76,7 @@ def get_data_paths() -> tuple[Path, Path, Path]:
     cfg = get_config()
     data_cfg = cfg.get("data", {})
     raw_obj_root = Path(data_cfg.get("raw_obj_root", "data/THuman_2.0"))
-    raw_smplx_root = Path(data_cfg.get("raw_smplx_root", "data/THuman_2.0_smplx_paras"))
+    raw_smplx_root = Path(data_cfg.get("raw_smplx_root", "data/THuman_2.0_smplx"))
     processed_root = Path(data_cfg.get("processed_root", "processed"))
     return raw_obj_root, raw_smplx_root, processed_root
 

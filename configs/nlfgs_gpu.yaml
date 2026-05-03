@@ -11,7 +11,7 @@ sys:
 # --- Dataset & resolution (single source of truth for image_size) ---
 data:
   raw_obj_root: data/THuman_2.0
-  raw_smplx_root: data/THuman_2.0_smplx_paras
+  raw_smplx_root: data/THuman_2.0_smplx
   processed_root: processed
   train_subject_path: data/split_train.txt
   val_subject_path: data/split_val.txt
@@ -112,7 +112,7 @@ render:
 
 # --- Inference (inference.py): checkpoint, outputs, optional reconstruction PNGs / PLY ---
 inference:
-  checkpoint: models/checkpoints/faithful-pyramid.ckpt
+  checkpoint: models/checkpoints/balmy-river.ckpt
   smplx_source: subject_params # subject_params | canonical_mesh
   output_dir: output
   save_reconstruction: true
@@ -122,8 +122,8 @@ inference:
 
 # --- Animation (anim.py) ---
 animation:
-  pose: reconstruction # reconstruction | tpose | custom (custom = pose from file + identity from subject smplx_param.pkl)
-  custom_pose_path: data/anim/custom_pose.pkl # .pkl or .json (e.g. mesh-*_smplx.json under data/anim)
+  pose: custom # reconstruction | tpose | custom (custom = pose from file + identity from subject smplx_param.pkl)
+  custom_pose_path: data/anim/bling1 # .pkl or .json (e.g. mesh-*_smplx.json under data/anim)
   display_mode: video # image | video
   reconstruction_subdir: reconstruction
   fps: 30

@@ -20,7 +20,7 @@ NVIDIA GPUs are required for this project. We recommend using anaconda to manage
 ## Data Setup
 
 ### Download THuman2.0 DataSet
-Please follow the[original repo](https://github.com/ytrock/THuman2.0-Dataset) to ask for permission to download the raw obj scans and estimated smplx parameters following their instructions. We only use the first 525 subjects in this experiment. After downloading, put the scaned obj files under `./data/Thuman_2.0` and the smplx parameters under `./data/Thuman_2.0_smplx_paras`.
+Please follow the[original repo](https://github.com/ytrock/THuman2.0-Dataset) to ask for permission to download the raw obj scans and estimated smplx parameters following their instructions. We only use the first 525 subjects in this experiment. After downloading, put the scaned obj files under `./data/Thuman_2.0` and the smplx parameters under `./data/THuman_2.0_smplx`.
 
 The final `data` folder should look like:
 ```
@@ -33,7 +33,7 @@ data/
 │   ├── 0002/
 │   │   └── ...
 │   └── ...
-└── Thuman_2.0_smplx_paras/
+└── THuman_2.0_smplx/
     ├── 0001/
     │   └── smplx_param.pkl
     │   └── mesh_smplx.obj

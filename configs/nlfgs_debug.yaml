@@ -10,7 +10,7 @@ sys:
 # --- Dataset & resolution (single source of truth for image_size) ---
 data:
   raw_obj_root: data/THuman_2.0
-  raw_smplx_root: data/THuman_2.0_smplx_paras
+  raw_smplx_root: data/THuman_2.0_smplx
   processed_root: processed
   num_views: 4
   image_size: [512, 512] # [W, H]
