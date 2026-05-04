@@ -147,7 +147,7 @@ def _extract_views(subject_target_dir):
     return sorted(views)
 
 
-def compute_metrics(preds_root, target_root, config_path=None, use_mask=True, use_crop=False):
+def compute_metrics(preds_root, target_root, config_path=None, use_mask=True, use_crop=False, test_views=None):
     config = load_config(config_path)
     image_size = config.get("data", {}).get("image_size", [1024, 1024])
     if len(image_size) == 2:
@@ -203,6 +203,9 @@ def compute_metrics(preds_root, target_root, config_path=None, use_mask=True, us
             }
 
         views = _extract_views(subject_target_dir)
+        if test_views is not None:
+            views = [view for view in views if int(view) in test_views]
+
         for view in views:
             gt_path = _find_gt_path(subject_target_dir, subject, view)
             pred_path = _find_pred_path(subject_preds_dir, view)
@@ -294,13 +297,14 @@ def compute_metrics(preds_root, target_root, config_path=None, use_mask=True, us
     )
 
 
-def evaluate_metrics(preds_root, target_root, config_path=None, use_mask=True, use_crop=False):
+def evaluate_metrics(preds_root, target_root, config_path=None, use_mask=True, use_crop=False, test_views=None):
     psnrs, ssims, lpips_alex, lpips_vgg, subject_metrics = compute_metrics(
         preds_root=preds_root,
         target_root=target_root,
         config_path=config_path,
         use_mask=use_mask,
-        use_crop=use_crop
+        use_crop=use_crop,
+        test_views=test_views
     )
 
     if psnrs.size == 0 or ssims.size == 0:
@@ -353,7 +357,7 @@ if __name__ == "__main__":
     parser.add_argument("--use-mask", action="store_true", default=False, help="Use mask for evaluation")
     parser.add_argument("--no-mask", dest="use_mask", action="store_false", help="Disable mask for evaluation")
     parser.add_argument("--use-crop", action="store_true", default=False, help="Use fixed crop for evaluation")
-    
+    parser.add_argument("--test-views", nargs="+", type=int, help="Test views for evaluation")
     args = parser.parse_args()
     
     config_path = args.config_path
@@ -362,11 +366,13 @@ if __name__ == "__main__":
     data_cfg = cfg.get("data", {})
     target = args.target_root or data_cfg.get("processed_root", "./processed")
     preds = args.preds_root or cfg.get("inference", {}).get("output_dir", "./output")
+    test_views = args.test_views or cfg.get("metrics", {}).get("test_views", [0, 30, 90, 120, 180, 270])
 
     evaluate_metrics(
         preds_root=preds,
         target_root=target,
         config_path=config_path,
         use_mask=args.use_mask,
-        use_crop=args.use_crop
+        use_crop=args.use_crop,
+        test_views=test_views
     )
