@@ -40,8 +40,7 @@ class AvatarDataModule(L.LightningDataModule):
         processed_root = Path(processed_root)
         base_ds = AvatarDataset(root=processed_root, transform=None)
 
-        num_views = int(data_cfg.get("num_views", 1))
-        chunk_size = num_views
+        chunk_size = base_ds.views_per_sample
 
         n = len(base_ds)
 

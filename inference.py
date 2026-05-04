@@ -30,8 +30,8 @@ from src.avatar_utils.ply_loader import reconstruct_gaussian_avatar_as_ply
 from src.avatar_utils.smplx_loader import load_smplx_coord3d, vertices_3d_to_2d
 from src.avatar_utils.camera import load_camera_mapping
 from src.avatar_utils.view_config import (
-    MODEL_INPUT_4VIEW_ORDER,
     VIEW_ORDER,
+    model_input_view_order,
     reconstruction_view_names_from_config,
 )
 from src.data.datasets import AvatarDataset
@@ -252,8 +252,10 @@ def run_inference(
     checkpoint: str,
     device: torch.device,
 ) -> tuple[torch.Tensor, dict[str, torch.Tensor], torch.Tensor, str, dict]:
-    """Run the forward pass for one subject using the four model views (0°/90°/180°/270°). Returns fused Gaussians, vertices3d, subject, template avatar dict."""
+    """Run the forward pass for one subject using ``data.num_views`` inputs (see ``model_input_view_order``). Returns fused Gaussians, vertices3d, subject, template avatar dict."""
     data_cfg = cfg.get("data", {})
+    num_views = int(data_cfg.get("num_views", 1))
+    expected_views = model_input_view_order(num_views)
     data_root = data_cfg.get("processed_root", "data/processed_test")
     ds = AvatarDataset(root=data_root)
     idx = _find_subject_index(ds, subject)
@@ -261,8 +263,9 @@ def run_inference(
     img_float = batch["images_float"].to(device)
     view_names = batch["view_names"]
     B = img_float.shape[0]
-    assert B == 4 and list(view_names) == list(MODEL_INPUT_4VIEW_ORDER), (
-        "Inference expects data.num_views: 4 (four cardinal azimuths)."
+    assert B == len(expected_views) and list(view_names) == expected_views, (
+        f"Inference batch views must match data.num_views={num_views}: "
+        f"expected {expected_views}, got {list(view_names)!r} (B={B})."
     )
 
     vertices3d = _vertices3d_for_inference(cfg, subject)
@@ -310,7 +313,7 @@ def run_inference(
         if local_frames.shape[0] == 1 and B > 1:
             local_frames = local_frames.expand(B, -1, -1, -1)
 
-        if model.num_views == 4:
+        if model.num_views > 1:
             if model.view_fusion is not None:
                 local_feats = model.view_fusion(local_feats, view_weights)
             else:

@@ -41,7 +41,7 @@ class NlfGaussianModel(L.LightningModule):
             raise ValueError(f"data.num_views must be in 1..4, got {self.num_views}")
         fusion_cfg = cfg.get("fusion", {})
         self.fusion_mode = str(fusion_cfg.get("mode", "fixed"))
-        if self.num_views == 4 and self.fusion_mode not in ("fixed", "learned"):
+        if self.num_views > 1 and self.fusion_mode not in ("fixed", "learned"):
             raise ValueError(f"fusion.mode must be 'fixed' or 'learned', got {self.fusion_mode!r}")
         dec_cfg = cfg.get("decoder", {})
         bb = cfg.get("backbone") or {}
@@ -59,7 +59,7 @@ class NlfGaussianModel(L.LightningModule):
         fusion_hidden = int(fusion_cfg.get("hidden_dim", dec_cfg.get("hidden", 256)))
         self.view_fusion = (
             LearnedViewFusion(feat_dim=feat_dim, hidden_dim=fusion_hidden)
-            if (self.num_views == 4 and self.fusion_mode == "learned")
+            if (self.num_views > 1 and self.fusion_mode == "learned")
             else None
         )
         self.template = AvatarTemplate()
@@ -174,8 +174,8 @@ class NlfGaussianModel(L.LightningModule):
             if local_frames.shape[0] == 1 and B > 1:
                 local_frames = local_frames.expand(B, -1, -1, -1)
 
-        # --- View fusion (4-view): learned MLP or fixed weights → single fused feature row ---
-        if self.num_views == 4:
+        # --- View fusion (multi-view): learned MLP or fixed weights → single fused feature row ---
+        if self.num_views > 1:
             if self.view_fusion is not None:
                 local_feats = self.view_fusion(local_feats, view_weights)
             else:
@@ -204,8 +204,8 @@ class NlfGaussianModel(L.LightningModule):
 
         per_view_losses = []
 
-        # --- Decode + render + loss: 4-view fused path vs per-view decode path ---
-        if self.num_views == 4:
+        # --- Decode + render + loss: fused multi-view path vs single-view (no fusion) ---
+        if self.num_views > 1:
             # Decode once from fused features; apply local offset in template frame.
             gaussian_params_fused = self.decoder(local_feats)
             gaussian_3d_fused = gaussian_3d_decode[0]
@@ -242,7 +242,7 @@ class NlfGaussianModel(L.LightningModule):
                     )
                 )
         else:
-            # num_views == 1: separate decode + render per view (no cross-view fusion).
+            # num_views == 1: single input view — no fusion; decode and supervise that view only.
             for view_idx, view_name in enumerate(view_names):
                 local_feats_view = local_feats[view_idx : view_idx + 1]
                 gaussian_params_view = self.decoder(local_feats_view)
@@ -369,6 +369,9 @@ class NlfGaussianModel(L.LightningModule):
         )
 
     def on_train_epoch_end(self):
-        if self.current_epoch >= self.hparams.train.ablation_epochs:
+        ablation_epochs = int(getattr(self.hparams, "ablation_epochs", 0))
+        if ablation_epochs > 0 and self.current_epoch >= ablation_epochs:
             print(f"Reached epoch {self.current_epoch}, stopping training.")
-            import sys; sys.exit(0)
+            import sys
+
+            sys.exit(0)
