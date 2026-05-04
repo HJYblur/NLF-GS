@@ -15,7 +15,7 @@ data:
   processed_root: processed
   train_subject_path: data/split_train.txt
   val_subject_path: data/split_val.txt
-  num_views: 4
+  num_views: 3
   image_size: [1024,1024] # [W, H]
 
 # --- Canonical cameras (intrinsics/extrinsics-style; resolution lives under data) ---
@@ -137,4 +137,4 @@ animation:
 # --- Offline metrics (evaluation scripts) ---
 metrics:
   lpips_cache_dir: models/lpips
-  test_views: [0, 90, 180, 270] # Degrees for orbit views; 0° = front (+Z)
+  # test_views: [0, 30, 60, 90, 120, 150, 180, 210, 240, 270, 300, 330] # Degrees for orbit views; 0° = front (+Z)

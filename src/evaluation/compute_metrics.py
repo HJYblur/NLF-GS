@@ -20,6 +20,7 @@ import torch
 from lpips import LPIPS
 
 from avatar_utils.config import load_config
+from avatar_utils.view_config import model_input_view_order
 
 
 def _setup_lpips_cache(config_path=None):
@@ -366,7 +367,25 @@ if __name__ == "__main__":
     data_cfg = cfg.get("data", {})
     target = args.target_root or data_cfg.get("processed_root", "./processed")
     preds = args.preds_root or cfg.get("inference", {}).get("output_dir", "./output")
-    test_views = args.test_views or cfg.get("metrics", {}).get("test_views", [0, 30, 90, 120, 180, 270])
+    
+    # Determine test_views with priority: CLI args > config.metrics.test_views > model_input_view_order > default
+    if args.test_views:
+        print(f"Using test_views from CLI args: {args.test_views}")
+        test_views = args.test_views
+    elif cfg.get("metrics", {}).get("test_views"):
+        print("Using test_views from config.metrics.test_views")
+        test_views = cfg.get("metrics", {}).get("test_views")
+    else:
+        # Get num_views from config to determine model input view order
+        num_views = data_cfg.get("num_views", 4)
+        try:
+            # model_input_view_order returns strings like ["0", "90", "180", "270"], convert to int
+            print(f"Using test_views from model_input_view_order for num_views={num_views}")
+            test_views = [int(v) for v in model_input_view_order(num_views)]
+        except (ValueError, KeyError):
+            # Fallback to hard-coded default
+            print("Using default test_views: [0]")
+            test_views = [0]
 
     evaluate_metrics(
         preds_root=preds,
