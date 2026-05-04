@@ -76,6 +76,7 @@ class NlfGaussianModel(L.LightningModule):
 
         # Optimizer / scheduler hyperparameters (read in configure_nlf_gaussian_optimizers).
         train_cfg = cfg.get("train", {})
+        ablation_epochs = int(train_cfg.get("ablation_epochs", 0))
         lr = float(train_cfg.get("lr", 1e-4))
         wd = float(train_cfg.get("wd", train_cfg.get("weight_decay", 0.01)))
         betas = train_cfg.get("betas", [0.9, 0.99])
@@ -94,6 +95,7 @@ class NlfGaussianModel(L.LightningModule):
                 "bb_lr_mult": bb_lr_mult,
                 "min_lr_ratio": min_lr_ratio,
                 "scheduler": scheduler_name,
+                "ablation_epochs": ablation_epochs,
             }
         )
 
@@ -365,3 +367,8 @@ class NlfGaussianModel(L.LightningModule):
         self.logger.experiment.log(
             {key: wandb.Image(render_np)}, step=int(self.global_step)
         )
+
+    def on_train_epoch_end(self):
+        if self.current_epoch >= self.hparams.train.ablation_epochs:
+            print(f"Reached epoch {self.current_epoch}, stopping training.")
+            import sys; sys.exit(0)

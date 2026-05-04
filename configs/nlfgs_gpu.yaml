@@ -66,12 +66,16 @@ decoder:
 
 # --- Training loop (Lightning + optim + losses + dev/monitoring) ---
 train:
+  resume: false
+  # Checkpoint
+  ckpt_path: /home/tim/Documents/LemonCode/avatar-benchmark/avatar-training/qot7fd4n/checkpoints/epoch=9-step=4250.ckpt
   # Run
   accelerator: cuda
   precision: 16-mixed # Use AMP (fp16) to halve VRAM on activations & weights
   batch_size: 4 # Must match num_views (4 views fused per subject)
   num_workers: 2
   epochs: 40
+  ablation_epochs: 20 # For ablation: number of epochs to train with full loss before switching off components
   val_ratio: 0.1
   train_decoder_only: false # true: freeze backbone and train decoder only; false: also train ResNet-FPN
 
@@ -133,3 +137,4 @@ animation:
 # --- Offline metrics (evaluation scripts) ---
 metrics:
   lpips_cache_dir: models/lpips
+  test_views: [0, 90, 180, 270] # Degrees for orbit views; 0° = front (+Z)

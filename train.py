@@ -33,12 +33,14 @@ def main():
 
     # Build datamodule
     dm = AvatarDataModule(cfg)
-    dm.setup("fit")
+    dm.setup("fit") # THIS TAKES FREAKING AGES !!!
 
     module = build_nlf_gaussian_model(cfg, device)
 
     max_epochs = int(cfg["train"]["epochs"]) if "train" in cfg else 1
 
+    resume_training = cfg.get("train", {}).get("resume", False)
+    ckpt_path = cfg.get("train", {}).get("ckpt_path") #  /home/tim/Documents/LemonCode/avatar-benchmark/avatar-training/qot7fd4n/checkpoints/epoch=9-step=4250.ckpt
     wandb_logger = WandbLogger(
         project="avatar-training",
         entity="lemon-tu-delft",
@@ -85,7 +87,12 @@ def main():
         logger=wandb_logger,
         log_every_n_steps=10,
     )
-    trainer.fit(module, datamodule=dm)
+
+    if ckpt_path and resume_training:
+        print(f"Resuming training from checkpoint: {ckpt_path}")
+        trainer.fit(module, datamodule=dm, ckpt_path=ckpt_path)
+    else:
+        trainer.fit(module, datamodule=dm)
 
 
 if __name__ == "__main__":

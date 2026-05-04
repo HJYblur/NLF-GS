@@ -94,6 +94,7 @@ class AvatarDataModule(L.LightningDataModule):
                 f.write("\n".join(train_subjects) + ("\n" if train_subjects else ""))
 
         # Create Subset datasets for train/val
+        # THIS TAKES FREAKING AGES !!! (I think the Subset)
         if len(train_idx) > 0:
             train_base = Subset(base_ds, train_idx)
             self.train_ds = ViewsChunkedDataset(train_base, chunk_size)
