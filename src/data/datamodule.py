@@ -1,6 +1,5 @@
 from typing import Optional, Dict, Any, Callable
 from pathlib import Path
-import math
 import torch
 import numpy as np
 from torch.utils.data import DataLoader, Subset
@@ -20,7 +19,11 @@ def worker_init_fn(worker_id):
 
 
 class AvatarDataModule(L.LightningDataModule):
-    """Lightning DataModule wrapping AvatarDataset with simple train/val split."""
+    """Lightning DataModule wrapping AvatarDataset with simple train/val split.
+
+    View chunk length follows ``data.num_views`` (one DataLoader row = one subject's
+    selected views). PyTorch ``DataLoader`` still uses ``batch_size=1`` on top of that.
+    """
 
     def __init__(self, cfg: Dict[str, Any]):
         super().__init__()
@@ -37,8 +40,8 @@ class AvatarDataModule(L.LightningDataModule):
         processed_root = Path(processed_root)
         base_ds = AvatarDataset(root=processed_root, transform=None)
 
-        # Chunk views sequentially based on desired views-per-batch (use train batch_size)
-        chunk_size = int(train_cfg.get("batch_size", 4))
+        num_views = int(data_cfg.get("num_views", 1))
+        chunk_size = num_views
 
         n = len(base_ds)
 

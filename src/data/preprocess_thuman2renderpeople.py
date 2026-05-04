@@ -74,8 +74,8 @@ from PIL import Image
 # Make ``avatar_utils`` importable when running as a script
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from avatar_utils.config import get_config  # noqa: E402
-from avatar_utils.view_config import MODEL_INPUT_VIEW_ORDER, VIEW_ORDER as ORBIT_VIEW_ORDER  # noqa: E402
+from avatar_utils.config import get_config
+from avatar_utils.view_config import MODEL_INPUT_4VIEW_ORDER, VIEW_ORDER as ORBIT_VIEW_ORDER
 
 
 def _views_tuple(mode: str) -> tuple[str, ...]:
@@ -84,10 +84,10 @@ def _views_tuple(mode: str) -> tuple[str, ...]:
     if m in ("orbit", "full", "24", "all"):
         return tuple(ORBIT_VIEW_ORDER)
     if m in ("cardinal", "four", "4", "model"):
-        return tuple(MODEL_INPUT_VIEW_ORDER)
+        return tuple(MODEL_INPUT_4VIEW_ORDER)
     raise ValueError(
         f"views_mode must be 'orbit' (default {len(ORBIT_VIEW_ORDER)} azimuth steps) or "
-        f"'cardinal' (four views {list(MODEL_INPUT_VIEW_ORDER)}), got {mode!r}"
+        f"'cardinal' (four views {list(MODEL_INPUT_4VIEW_ORDER)}), got {mode!r}"
     )
 
 

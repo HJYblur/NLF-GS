@@ -72,7 +72,6 @@ train:
   # Run
   accelerator: cuda
   precision: 16-mixed # Use AMP (fp16) to halve VRAM on activations & weights
-  batch_size: 4 # Must match num_views (4 views fused per subject)
   num_workers: 2
   epochs: 40
   ablation_epochs: 20 # For ablation: number of epochs to train with full loss before switching off components

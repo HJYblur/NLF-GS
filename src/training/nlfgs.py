@@ -37,8 +37,8 @@ class NlfGaussianModel(L.LightningModule):
         super().__init__()
         cfg = get_config()
         self.num_views = int(cfg.get("data", {}).get("num_views", 1))
-        if self.num_views not in (1, 4):
-            raise ValueError(f"data.num_views must be 1 or 4, got {self.num_views}")
+        if not (1 <= self.num_views <= 4):
+            raise ValueError(f"data.num_views must be in 1..4, got {self.num_views}")
         fusion_cfg = cfg.get("fusion", {})
         self.fusion_mode = str(fusion_cfg.get("mode", "fixed"))
         if self.num_views == 4 and self.fusion_mode not in ("fixed", "learned"):

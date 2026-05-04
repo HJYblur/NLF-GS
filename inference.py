@@ -30,7 +30,7 @@ from src.avatar_utils.ply_loader import reconstruct_gaussian_avatar_as_ply
 from src.avatar_utils.smplx_loader import load_smplx_coord3d, vertices_3d_to_2d
 from src.avatar_utils.camera import load_camera_mapping
 from src.avatar_utils.view_config import (
-    MODEL_INPUT_VIEW_ORDER,
+    MODEL_INPUT_4VIEW_ORDER,
     VIEW_ORDER,
     reconstruction_view_names_from_config,
 )
@@ -261,7 +261,7 @@ def run_inference(
     img_float = batch["images_float"].to(device)
     view_names = batch["view_names"]
     B = img_float.shape[0]
-    assert B == 4 and list(view_names) == MODEL_INPUT_VIEW_ORDER, (
+    assert B == 4 and list(view_names) == list(MODEL_INPUT_4VIEW_ORDER), (
         "Inference expects data.num_views: 4 (four cardinal azimuths)."
     )
 

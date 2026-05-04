@@ -9,7 +9,8 @@ from avatar_utils.smplx_loader import load_smplx_coord3d
 from avatar_utils.smplx_loader import vertices_3d_to_2d
 from avatar_utils.camera import load_camera_mapping
 
-from avatar_utils.view_config import MODEL_INPUT_VIEW_ORDER, VIEW_ORDER
+from avatar_utils.view_config import VIEW_ORDER, model_input_view_order
+
 
 IMG_EXTS = (".png", ".jpg", ".jpeg")
 
@@ -17,14 +18,10 @@ IMG_EXTS = (".png", ".jpg", ".jpeg")
 def views_per_sample_for_num_views(num_views: int) -> int:
     """View-axis length of tensors returned by ``AvatarDataset.__getitem__``.
 
-    When you add a new ``data.num_views`` mode, update this and the selection block in
-    ``AvatarDataset.__getitem__`` so chunking and loaders stay correct.
+    Uses ``model_input_view_order`` from ``view_config``; keep that in sync with the
+    selection logic in ``AvatarDataset.__getitem__``.
     """
-    if num_views == 4:
-        return len(MODEL_INPUT_VIEW_ORDER)
-    if num_views == 1:
-        return len(VIEW_ORDER)
-    raise ValueError(f"data.num_views must be 1 or 4, got {num_views}")
+    return len(model_input_view_order(num_views))
 
 
 class AvatarDataset(Dataset):
@@ -39,13 +36,13 @@ class AvatarDataset(Dataset):
         Layout per smplx_param (preferred):
             processed/<subject>/<subject>_smplx.pkl
 
-    The dataset requires all orbit renders on disk (``VIEW_ORDER``). When ``data.num_views``
-    is 4, each sample exposes only the four model inputs (0° / 90° / 180° / 270°, same roles as
-    the former front / right / back / left). When ``data.num_views`` is 1, all orbit views are
-    exposed for chunked single-view training.
+    The dataset requires all orbit renders on disk (``VIEW_ORDER``). ``data.num_views``
+    in ``{1,…,4}`` selects a fixed multi-view subset via ``model_input_view_order`` (e.g.
+    four cardinals at 0°/90°/180°/270°, three at 0°/120°/240°, two at 0°/180°, or front
+    only for a single view).
 
-    Training-time fusion is controlled by ``data.num_views`` in the trainer
-    (1 = no fusion; 4 = fuse four-view features).
+    Training-time fusion is controlled by ``data.num_views`` and the trainer / fusion
+    config.
 
     Outputs per sample:
       - images_float: torch.FloatTensor [V, C, H, W], normalized to [0,1]
@@ -122,12 +119,12 @@ class AvatarDataset(Dataset):
 
         images_uint8 = (images_float.clamp(0.0, 1.0) * 255.0).round().to(torch.uint8)  # [V,C,H,W]
 
-        if self.num_views == 4:
-            sel = [VIEW_ORDER.index(v) for v in MODEL_INPUT_VIEW_ORDER]
-            images_float = images_float[sel]
-            masks_float = masks_float[sel]
-            images_uint8 = images_uint8[sel]
-            view_names = list(MODEL_INPUT_VIEW_ORDER)
+        order = model_input_view_order(self.num_views)
+        sel = [VIEW_ORDER.index(v) for v in order]
+        images_float = images_float[sel]
+        masks_float = masks_float[sel]
+        images_uint8 = images_uint8[sel]
+        view_names = list(order)
 
         # Load normalized SMPL-X parameters exported by preprocessing.
         subject = rec["subject"]

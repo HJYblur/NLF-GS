@@ -14,7 +14,23 @@ VIEW_ORDER: List[str] = [str(d) for d in range(0, 360, VIEW_AZIMUTH_STEP_DEG)]
 NUM_CANONICAL_VIEWS = len(VIEW_ORDER)
 
 # Four views fed to the model (same layout as legacy front / right / back / left).
-MODEL_INPUT_VIEW_ORDER: List[str] = ["0", "90", "180", "270"]
+MODEL_INPUT_4VIEW_ORDER: List[str] = ["0", "90", "180", "270"]
+MODEL_INPUT_3VIEW_ORDER: List[str] = ["0", "120", "240"]
+MODEL_INPUT_2VIEW_ORDER: List[str] = ["0", "180"]
+MODEL_INPUT_1VIEW_ORDER: List[str] = ["0"]
+
+
+def model_input_view_order(num_views: int) -> List[str]:
+    """Which orbit azimuth keys (strings) are stacked as the view axis for ``data.num_views``."""
+    if num_views == 1:
+        return list(MODEL_INPUT_1VIEW_ORDER)
+    if num_views == 2:
+        return list(MODEL_INPUT_2VIEW_ORDER)
+    if num_views == 3:
+        return list(MODEL_INPUT_3VIEW_ORDER)
+    if num_views == 4:
+        return list(MODEL_INPUT_4VIEW_ORDER)
+    raise ValueError(f"data.num_views must be in 1..4, got {num_views}")
 
 
 def azimuth_direction(deg: float) -> tuple[float, float, float]:
@@ -34,7 +50,7 @@ def reconstruction_view_names_from_config(mode: str) -> List[str]:
     if m in ("full_orbit", "orbit", "all", "24"):
         return list(VIEW_ORDER)
     if m in ("cardinal", "model", "four", "4"):
-        return list(MODEL_INPUT_VIEW_ORDER)
+        return list(MODEL_INPUT_4VIEW_ORDER)
     raise ValueError(
         f"inference.reconstruction_render_mode must be 'full_orbit' or 'cardinal', got {mode!r}"
     )
