@@ -14,6 +14,19 @@ from avatar_utils.view_config import MODEL_INPUT_VIEW_ORDER, VIEW_ORDER
 IMG_EXTS = (".png", ".jpg", ".jpeg")
 
 
+def views_per_sample_for_num_views(num_views: int) -> int:
+    """View-axis length of tensors returned by ``AvatarDataset.__getitem__``.
+
+    When you add a new ``data.num_views`` mode, update this and the selection block in
+    ``AvatarDataset.__getitem__`` so chunking and loaders stay correct.
+    """
+    if num_views == 4:
+        return len(MODEL_INPUT_VIEW_ORDER)
+    if num_views == 1:
+        return len(VIEW_ORDER)
+    raise ValueError(f"data.num_views must be 1 or 4, got {num_views}")
+
+
 class AvatarDataset(Dataset):
     """
     Minimal dataset for processed inputs.
@@ -54,8 +67,8 @@ class AvatarDataset(Dataset):
         data_cfg = cfg.get("data", {})
         self.smplx_root = Path(data_cfg.get("processed_root", "processed"))
         self.num_views = int(data_cfg.get("num_views", 1))
-        if self.num_views not in (1, 4):
-            raise ValueError(f"data.num_views must be 1 or 4, got {self.num_views}")
+        # Validates supported modes (keep in sync with views_per_sample_for_num_views).
+        views_per_sample_for_num_views(self.num_views)
 
         # Index subjects and required views
         self._records: List[Dict[str, Any]] = []
@@ -64,6 +77,11 @@ class AvatarDataset(Dataset):
             raise FileNotFoundError(
                 f"No valid subjects found under {self.root}. Expected images `<subject>_<deg>.png` for deg in {{{VIEW_ORDER[0]}, …, {VIEW_ORDER[-1]}}}."
             )
+
+    @property
+    def views_per_sample(self) -> int:
+        """Tensor view dimension V in ``__getitem__`` (must match chunking)."""
+        return views_per_sample_for_num_views(self.num_views)
 
     def __len__(self) -> int:
         if self.debug:
@@ -195,13 +213,24 @@ class ViewsChunkedDataset(Dataset):
     items with images_float [K,C,H,W], where K=chunk_size (last chunk may be smaller).
     """
 
-    def __init__(self, base_ds: Dataset, chunk_size: int):
+    def __init__(
+        self,
+        base_ds: Dataset,
+        chunk_size: int,
+        views_per_sample: Optional[int] = None,
+    ):
         self.base_ds = base_ds
         self.chunk_size = max(1, int(chunk_size))
         self._chunks: List[Tuple[int, int, int]] = []
-        for i in range(len(base_ds)):
-            sample = base_ds[i]
+        V = views_per_sample
+        if V is None:
+            V = getattr(base_ds, "views_per_sample", None)
+        if V is None:
+            sample = base_ds[0]
             V = int(sample["images_float"].shape[0])
+        V = int(V)
+        n = len(base_ds)
+        for i in range(n):
             for start in range(0, V, self.chunk_size):
                 end = min(start + self.chunk_size, V)
                 self._chunks.append((i, start, end))

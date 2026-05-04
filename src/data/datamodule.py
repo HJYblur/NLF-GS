@@ -93,17 +93,17 @@ class AvatarDataModule(L.LightningDataModule):
             with open(train_file, "w") as f:
                 f.write("\n".join(train_subjects) + ("\n" if train_subjects else ""))
 
-        # Create Subset datasets for train/val
-        # THIS TAKES FREAKING AGES !!! (I think the Subset)
+
+        vps = base_ds.views_per_sample
         if len(train_idx) > 0:
             train_base = Subset(base_ds, train_idx)
-            self.train_ds = ViewsChunkedDataset(train_base, chunk_size)
+            self.train_ds = ViewsChunkedDataset(train_base, chunk_size, views_per_sample=vps)
         else:
             self.train_ds = None
 
         if len(val_idx) > 0:
             val_base = Subset(base_ds, val_idx)
-            self.val_ds = ViewsChunkedDataset(val_base, chunk_size)
+            self.val_ds = ViewsChunkedDataset(val_base, chunk_size, views_per_sample=vps)
         else:
             self.val_ds = None
 
