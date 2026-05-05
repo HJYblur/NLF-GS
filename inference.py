@@ -12,7 +12,9 @@ import argparse
 import os
 import pickle
 import sys
+import time
 from pathlib import Path
+from typing import Optional
 
 import numpy as np
 import torch
@@ -232,6 +234,11 @@ def _vertices3d_for_inference(cfg: dict, subject: str) -> torch.Tensor:
     )
 
 
+def _sync_device(device: torch.device) -> None:
+    if device.type == "cuda":
+        torch.cuda.synchronize()
+
+
 def _load_checkpoint(model: NlfGaussianModel, ckpt_path: str, device: torch.device) -> None:
     ckpt_path = str(ckpt_path)
     if not Path(ckpt_path).is_file():
@@ -251,8 +258,17 @@ def run_inference(
     subject: str,
     checkpoint: str,
     device: torch.device,
-) -> tuple[torch.Tensor, dict[str, torch.Tensor], torch.Tensor, str, dict]:
-    """Run the forward pass for one subject using ``data.num_views`` inputs (see ``model_input_view_order``). Returns fused Gaussians, vertices3d, subject, template avatar dict."""
+    *,
+    model: Optional[NlfGaussianModel] = None,
+    profile_neural: bool = False,
+) -> tuple[torch.Tensor, dict[str, torch.Tensor], torch.Tensor, str, dict, Optional[float]]:
+    """Run the forward pass for one subject using ``data.num_views`` inputs (see ``model_input_view_order``).
+
+    Pass a pre-built ``model`` (already on ``device``, eval) to avoid reloading weights per subject.
+
+    When ``profile_neural`` is true, returns neural forward wall time in seconds (CUDA-synchronized)
+    as the last tuple element; otherwise that element is ``None``.
+    """
     data_cfg = cfg.get("data", {})
     num_views = int(data_cfg.get("num_views", 1))
     expected_views = model_input_view_order(num_views)
@@ -280,12 +296,17 @@ def run_inference(
     else:
         vertices2d = torch.empty(B, 0, 2, device=device, dtype=torch.float32)
 
-    model = build_nlf_gaussian_model(cfg, device)
-    _load_checkpoint(model, checkpoint, device)
+    if model is None:
+        model = build_nlf_gaussian_model(cfg, device)
+        _load_checkpoint(model, checkpoint, device)
 
     H, W = img_float.shape[-2:]
+    neural_s: Optional[float] = None
     grad_ctx = torch.inference_mode()
     with grad_ctx:
+        if profile_neural:
+            _sync_device(device)
+            t0 = time.perf_counter()
         feat_list = []
         for v_idx in range(B):
             f_v = model.backbone.extract_feature_map(img_float[v_idx : v_idx + 1])
@@ -334,9 +355,12 @@ def run_inference(
             gaussian_3d_fused = gaussian_3d_fused + torch.einsum(
                 "nij,nj->ni", local_frames_decode[0], offset_local
             )
+        if profile_neural:
+            _sync_device(device)
+            neural_s = time.perf_counter() - t0
 
     template_avatar = model.template.avatar
-    return gaussian_3d_fused, gaussian_params_fused, vertices3d.cpu(), subject, template_avatar
+    return gaussian_3d_fused, gaussian_params_fused, vertices3d.cpu(), subject, template_avatar, neural_s
 
 
 def main():
@@ -372,14 +396,25 @@ def main():
         f"{subjects[0]} -> {subjects[-1]}"
     )
 
+    log_fps = bool(inf_cfg.get("log_fps", False))
+    shared_model = build_nlf_gaussian_model(cfg, device)
+    _load_checkpoint(shared_model, str(ckpt_path), device)
+
     renderer = gsplat_renderer_if_cuda(device)
 
     out_root = Path(str(inf_cfg.get("output_dir", cfg.get("render", {}).get("save_path", "output"))))
 
+    neural_times_s: list[float] = []
     for subject in subjects:
-        gaussian_3d, gaussian_params, vertices3d, _subject, template_avatar = run_inference(
-            cfg, subject, str(ckpt_path), device
+        gaussian_3d, gaussian_params, vertices3d, _subject, template_avatar, neural_s = run_inference(
+            cfg, subject, str(ckpt_path), device, model=shared_model, profile_neural=log_fps
         )
+        if neural_s is not None:
+            neural_times_s.append(neural_s)
+            print(
+                f"[{subject}] neural forward: {neural_s * 1000.0:.2f} ms "
+                f"({1.0 / neural_s:.2f} subjects/s)"
+            )
 
         sub_dir = out_root / subject
         sub_dir.mkdir(parents=True, exist_ok=True)
@@ -460,6 +495,13 @@ def main():
 
         print(
             f"[{subject}] Saved {recon_prefix}_*.png ({len(recon_view_names)} views) under {views_dir.resolve()}"
+        )
+
+    if log_fps and neural_times_s:
+        mean_s = sum(neural_times_s) / len(neural_times_s)
+        print(
+            f"Inference neural forward — mean over {len(neural_times_s)} subject(s): "
+            f"{mean_s * 1000.0:.2f} ms/subject, {1.0 / mean_s:.2f} subjects/s (avg)"
         )
 
 

@@ -122,6 +122,7 @@ inference:
   reconstruction_subdir: reconstruction
   reconstruction_render_mode: full_orbit # full_orbit (24) | cardinal (4)
   save_test_ply: false
+  log_fps: True # Log FPS of the inference process
 
 # --- Animation (anim.py) ---
 animation:
