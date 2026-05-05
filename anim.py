@@ -3,11 +3,13 @@ Drive saved NLF-GS Gaussian **appearance** (inference ``.pt``) under new SMPL-X 
 
 **Config** (``animation`` in YAML, e.g. ``configs/nlfgs_gpu.yaml``):
 
-* ``pose``: ``reconstruction`` (pkl as stored) | ``tpose`` (body pose rest) | ``custom`` (``custom_pose_path`` — motion only: pose joints from file, shape/scale/translation from subject ``smplx_param.pkl``)
-* ``display_mode``: ``image`` — canonical orbit views into ``reconstruction_subdir``; ``video`` — spin, ``{prefix}_{subject}_{pose}.mp4`` in ``video_subdir``
+* ``pose``: ``reconstruction`` (pkl as stored) | ``tpose`` (body pose rest) | ``custom`` (``custom_pose_path`` — motion only; identity from subject ``smplx_param.pkl``)
+* ``custom_pose_path``: single ``.json`` / ``.pkl``, or a **directory** of per-frame files. Any top-level ``*.json`` / ``*.pkl`` are included; order is sorted.
+* ``display_mode``: ``image`` — canonical orbit views into ``reconstruction_subdir``; ``video`` — writes ``{prefix}_{subject}_{pose}.mp4`` under ``video_subdir``, plus **every frame** as ``frame_%06d.png`` under ``{same_stem}_frames/`` (spin or motion sequence).
 * ``reconstruction_subdir`` (else ``inference.reconstruction_subdir``; default ``reconstruction``)
 * ``fps`` / ``duration_seconds`` (legacy: ``frame`` as fps, ``duration`` as seconds)
 * ``video_subdir`` (else ``inference.video_subdir``; default ``anim_video``)
+* ``save_video_frame_pngs`` (default ``true``): when ``display_mode: video``, write ``frame_000000.png``, … next to the MP4; set ``false`` or pass ``--no-save-video-frame-pngs`` to skip (saves disk).
 """
 from __future__ import annotations
 
@@ -32,6 +34,7 @@ from src.avatar_utils.smplx_loader import (
     load_smplx_params_dict,
     load_smplx_params_from_path,
     merge_subject_identity_with_driver_pose,
+    smplx_motion_sequence_paths,
     vertices_from_smplx_param_dict,
 )
 from src.avatar_utils.subject_utils import subjects_in_range
@@ -118,6 +121,12 @@ def _animation_fps_duration(cfg: dict) -> tuple[float, float]:
     return float(fps), float(duration)
 
 
+def _animation_save_video_frame_pngs(cfg: dict) -> bool:
+    """Whether to write ``frame_%06d.png`` next to each MP4 (default True)."""
+    anim = _anim_section(cfg)
+    return bool(anim.get("save_video_frame_pngs", True))
+
+
 def _resolve_output_root(cfg: dict) -> Path:
     inf_cfg = cfg.get("inference", {})
     out_root = Path(str(inf_cfg.get("output_dir", cfg.get("render", {}).get("save_path", "output"))))
@@ -141,24 +150,11 @@ def _resolve_smplx_pkl(cfg: dict, subject: str) -> Path:
 
 
 def _base_smplx_params(cfg: dict, subject: str, pose: str, pkl_override: Path | None) -> dict:
-    """Static SMPL-X parameter dict before optional per-frame yaw (``display_mode: video``)."""
-    anim = _anim_section(cfg)
-
-    if pose == "custom":
-        rel = anim.get("custom_pose_path")
-        if not rel:
-            raise ValueError("animation.custom_pose_path is required when animation.pose is 'custom'")
-        motion_path = _resolve_path(str(rel))
-        if not motion_path.is_file():
-            raise FileNotFoundError(f"custom pose file not found: {motion_path}")
-        driver = load_smplx_params_from_path(str(motion_path))
-        subj_pkl = pkl_override if pkl_override is not None else _resolve_smplx_pkl(cfg, subject)
-        if not subj_pkl.is_file():
-            raise FileNotFoundError(
-                f"Need subject SMPL-X pickle for identity (betas/scale/translation): {subj_pkl}"
-            )
-        subject_params = load_smplx_params_dict(str(subj_pkl))
-        return merge_subject_identity_with_driver_pose(subject_params, driver)
+    """SMPL-X parameter dict from the subject pickle (``reconstruction`` or ``tpose`` only)."""
+    if pose not in ("reconstruction", "tpose"):
+        raise ValueError(
+            f"_base_smplx_params expects pose 'reconstruction' or 'tpose', got {pose!r}"
+        )
 
     pkl = pkl_override if pkl_override is not None else _resolve_smplx_pkl(cfg, subject)
     if not pkl.is_file():
@@ -167,9 +163,7 @@ def _base_smplx_params(cfg: dict, subject: str, pose: str, pkl_override: Path | 
     params = load_smplx_params_dict(str(pkl))
     if pose == "tpose":
         return copy_smplx_params_tpose_rest(params)
-    if pose == "reconstruction":
-        return params
-    raise AssertionError(f"unhandled pose {pose!r}")
+    return params
 
 
 def _template_dict_from_bundle(bundle: dict) -> dict:
@@ -178,6 +172,11 @@ def _template_dict_from_bundle(bundle: dict) -> dict:
     raise ValueError(
         "Bundle has no 'parent' key — export inference with the same template so parent indices are saved."
     )
+
+
+def _video_frames_directory(video_path: Path) -> Path:
+    """Directory for per-frame PNGs alongside ``video_path`` (``<stem>_frames/``)."""
+    return video_path.parent / f"{video_path.stem}_frames"
 
 
 def _render_spin_video(
@@ -190,9 +189,13 @@ def _render_spin_video(
     num_frames: int,
     fps: float,
     video_path: Path,
+    save_frame_pngs: bool = True,
 ) -> None:
     frames_rgb: list[numpy.ndarray] = []
     gp_cpu = {k: v.detach().cpu() if torch.is_tensor(v) else v for k, v in gaussian_params.items()}
+    frames_dir = _video_frames_directory(video_path) if save_frame_pngs else None
+    if frames_dir is not None:
+        frames_dir.mkdir(parents=True, exist_ok=True)
 
     with torch.inference_mode():
         for i in range(num_frames):
@@ -211,13 +214,67 @@ def _render_spin_video(
                 view_name="0",
                 save_folder_path=None,
             )
-            frames_rgb.append(
-                (rgb[0].clamp(0, 1).detach().cpu().numpy() * 255.0).astype(numpy.uint8)
-            )
+            frame_u8 = (rgb[0].clamp(0, 1).detach().cpu().numpy() * 255.0).astype(numpy.uint8)
+            frames_rgb.append(frame_u8)
+            if frames_dir is not None:
+                imageio.imwrite(str(frames_dir / f"frame_{i:06d}.png"), frame_u8)
 
     video_path.parent.mkdir(parents=True, exist_ok=True)
     imageio.mimsave(str(video_path), frames_rgb, fps=fps)
-    print(f"Saved video ({num_frames} frames @ {fps} fps) → {video_path.resolve()}")
+    print(f"Saved spin video ({num_frames} frames @ {fps} fps) → {video_path.resolve()}")
+    if frames_dir is not None:
+        print(f"Saved frame PNGs ({num_frames}) → {frames_dir.resolve()}")
+
+
+def _render_custom_sequence_video(
+    *,
+    renderer,
+    estimator,
+    gaussian_params: dict,
+    device: torch.device,
+    subject_smplx_params: dict,
+    driver_paths: list[Path],
+    fps: float,
+    video_path: Path,
+    save_frame_pngs: bool = True,
+) -> None:
+    """One video frame per motion file (directory sequence); identity from ``subject_smplx_params``."""
+    frames_rgb: list[numpy.ndarray] = []
+    gp_cpu = {k: v.detach().cpu() if torch.is_tensor(v) else v for k, v in gaussian_params.items()}
+    frames_dir = _video_frames_directory(video_path) if save_frame_pngs else None
+    if frames_dir is not None:
+        frames_dir.mkdir(parents=True, exist_ok=True)
+
+    with torch.inference_mode():
+        for i, p in enumerate(driver_paths):
+            driver = load_smplx_params_from_path(str(p))
+            merged = merge_subject_identity_with_driver_pose(subject_smplx_params, driver)
+            verts_i = vertices_from_smplx_param_dict(merged)
+            fused = replay_fused_gaussian_means(
+                estimator,
+                verts_i,
+                gp_cpu,
+                device=device,
+            )
+            gp_render = gaussian_params_for_render(gp_cpu, device=device)
+            rgb = renderer.render(
+                fused,
+                gp_render,
+                view_name="0",
+                save_folder_path=None,
+            )
+            frame_u8 = (rgb[0].clamp(0, 1).detach().cpu().numpy() * 255.0).astype(numpy.uint8)
+            frames_rgb.append(frame_u8)
+            if frames_dir is not None:
+                imageio.imwrite(str(frames_dir / f"frame_{i:06d}.png"), frame_u8)
+
+    video_path.parent.mkdir(parents=True, exist_ok=True)
+    imageio.mimsave(str(video_path), frames_rgb, fps=fps)
+    print(
+        f"Saved motion sequence video ({len(driver_paths)} frames @ {fps} fps) → {video_path.resolve()}"
+    )
+    if frames_dir is not None:
+        print(f"Saved frame PNGs ({len(driver_paths)}) → {frames_dir.resolve()}")
 
 
 def main():
@@ -266,9 +323,9 @@ def main():
         help="Prefix for PNGs; for video, file is {prefix}_{subject}_{pose}.mp4",
     )
     parser.add_argument(
-        "--save-ply",
+        "--no-save-video-frame-pngs",
         action="store_true",
-        help="Also write anim_{subject}.ply (single static pose; image mode or first frame semantics N/A).",
+        help="Skip per-frame PNGs beside the MP4 (video mode only).",
     )
     args = parser.parse_args()
 
@@ -279,6 +336,7 @@ def main():
 
     pose, display_mode = _animation_pose_display_mode(cfg, args.pose, args.display_mode)
     fps, duration_s = _animation_fps_duration(cfg)
+    save_video_pngs = _animation_save_video_frame_pngs(cfg) and not args.no_save_video_frame_pngs
     pkl_override = Path(args.pkl).resolve() if args.pkl else None
 
     subjects = subjects_in_range(cfg, args.start_subject, args.end_subject)
@@ -291,6 +349,18 @@ def main():
     video_rel_subdir = _animation_video_subdir(cfg)
 
     views_subdir = args.views_subdir or _reconstruction_subdir(cfg)
+
+    motion_paths: list[Path] | None = None
+    if pose == "custom":
+        anim_cfg = _anim_section(cfg)
+        rel = anim_cfg.get("custom_pose_path")
+        if not rel:
+            raise ValueError("animation.custom_pose_path is required when animation.pose is 'custom'")
+        motion_paths = smplx_motion_sequence_paths(_resolve_path(str(rel)))
+        print(
+            f"Custom motion: {len(motion_paths)} file(s), "
+            f"first={motion_paths[0].name}, last={motion_paths[-1].name}"
+        )
 
     for subject in subjects:
         bundle_path = Path(args.bundle) if args.bundle else _default_bundle_path(cfg, subject)
@@ -312,36 +382,72 @@ def main():
         if not isinstance(gaussian_params, dict):
             raise TypeError("bundle['gaussian_params'] must be a dict of tensors.")
 
-        static_params = _base_smplx_params(cfg, subject, pose, pkl_override)
+        subject_params: dict | None = None
+        if pose == "custom":
+            subj_pkl = pkl_override if pkl_override is not None else _resolve_smplx_pkl(cfg, subject)
+            if not subj_pkl.is_file():
+                raise FileNotFoundError(
+                    f"Need subject SMPL-X pickle for identity (betas/scale/translation): {subj_pkl}"
+                )
+            subject_params = load_smplx_params_dict(str(subj_pkl))
+            assert motion_paths is not None
+            driver0 = load_smplx_params_from_path(str(motion_paths[0]))
+            static_params = merge_subject_identity_with_driver_pose(subject_params, driver0)
+        else:
+            static_params = _base_smplx_params(cfg, subject, pose, pkl_override)
 
         sub_dir = out_root / subject
         sub_dir.mkdir(parents=True, exist_ok=True)
 
         if display_mode == "video":
             if device.type != "cuda":
-                n = frame_count_for_duration_seconds(fps, duration_s)
-                print(
-                    f"[{subject}] Skipping spin video (CUDA required). Would write {n} frames @ {fps} Hz."
-                )
+                if pose == "custom" and motion_paths is not None and len(motion_paths) > 1:
+                    n = len(motion_paths)
+                    kind = "motion sequence video"
+                else:
+                    n = frame_count_for_duration_seconds(fps, duration_s)
+                    kind = "spin video"
+                print(f"[{subject}] Skipping {kind} (CUDA required). Would write {n} frames @ {fps} Hz.")
                 continue
             assert renderer is not None
-            n_frames = frame_count_for_duration_seconds(fps, duration_s)
             vid_dir = sub_dir / video_rel_subdir
             vid_dir.mkdir(parents=True, exist_ok=True)
             vid_path = vid_dir / f"{args.save_prefix}_{subject}_{pose}.mp4"
-            _render_spin_video(
-                renderer=renderer,
-                estimator=estimator,
-                gaussian_params=gaussian_params,
-                device=device,
-                static_smplx_params=static_params,
-                num_frames=n_frames,
-                fps=fps,
-                video_path=vid_path,
-            )
+            if pose == "custom" and motion_paths is not None and len(motion_paths) > 1:
+                assert subject_params is not None
+                _render_custom_sequence_video(
+                    renderer=renderer,
+                    estimator=estimator,
+                    gaussian_params=gaussian_params,
+                    device=device,
+                    subject_smplx_params=subject_params,
+                    driver_paths=motion_paths,
+                    fps=fps,
+                    video_path=vid_path,
+                    save_frame_pngs=save_video_pngs,
+                )
+            else:
+                n_frames = frame_count_for_duration_seconds(fps, duration_s)
+                _render_spin_video(
+                    renderer=renderer,
+                    estimator=estimator,
+                    gaussian_params=gaussian_params,
+                    device=device,
+                    static_smplx_params=static_params,
+                    num_frames=n_frames,
+                    fps=fps,
+                    video_path=vid_path,
+                    save_frame_pngs=save_video_pngs,
+                )
             continue
 
         # display_mode == image — single static pose, four canonical cameras
+        if pose == "custom" and motion_paths is not None and len(motion_paths) > 1:
+            print(
+                f"[{subject}] custom_pose_path has {len(motion_paths)} frames; "
+                f"image mode uses the first after sort ({motion_paths[0].name})."
+            )
+
         verts_new = vertices_from_smplx_param_dict(static_params)
         fused = replay_fused_gaussian_means(
             estimator,

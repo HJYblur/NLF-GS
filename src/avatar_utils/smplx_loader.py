@@ -1,6 +1,7 @@
 import copy
 import json
 import pickle
+import re
 from pathlib import Path
 
 import cv2
@@ -122,6 +123,59 @@ def load_smplx_params_from_path(path: str) -> dict:
             raise TypeError(f"Expected JSON object in {path}, got {type(raw)}")
         return _coerce_smplx_params_dict(raw)
     return load_smplx_params_dict(str(p))
+
+
+def _motion_file_sort_key(path: Path) -> tuple:
+    """Stable ordering for motion frames: digit runs in the stem (left→right), then lexical.
+
+    Works for arbitrary layouts (``frame_00012.json``, ``seq-f00210.pkl``, ``clip03_part02.json``, …).
+    """
+    stem = path.stem
+    nums = tuple(int(m) for m in re.findall(r"\d+", stem))
+    if nums:
+        return (0, nums, path.name.lower())
+    return (1, path.name.lower())
+
+
+def smplx_motion_sequence_paths(motion_path: str | Path) -> list[Path]:
+    """Resolve SMPL-X motion inputs: one ``.json`` / ``.pkl`` file, or a directory of per-frame files.
+
+    For a **directory**, collects every non-hidden ``*.json`` and ``*.pkl`` at the top level (no subfolders).
+    Files are sorted by **integer tuples** extracted from digit runs in the filename stem (e.g.
+    ``pose_12.json`` → ``(12,)``, ``clip_3_frame_004.json`` → ``(3, 4)``). Names with no digits sort
+    alphabetically after digit-based names.
+
+    Returns:
+        Non-empty list of absolute paths.
+    """
+    root = Path(motion_path).expanduser()
+    if root.is_file():
+        if root.suffix.lower() not in (".json", ".pkl"):
+            raise ValueError(f"SMPL-X motion file must be .json or .pkl, got {root}")
+        return [root.resolve()]
+
+    if not root.is_dir():
+        raise FileNotFoundError(f"SMPL-X motion path not found: {root}")
+
+    seen: set[str] = set()
+    uniq: list[Path] = []
+    for pattern in ("*.json", "*.pkl"):
+        for p in root.glob(pattern):
+            if not p.is_file() or p.name.startswith("."):
+                continue
+            key = str(p.resolve())
+            if key in seen:
+                continue
+            seen.add(key)
+            uniq.append(Path(key))
+
+    if not uniq:
+        raise FileNotFoundError(
+            f"No SMPL-X motion files (*.json or *.pkl) under {root}"
+        )
+
+    uniq.sort(key=_motion_file_sort_key)
+    return uniq
 
 
 # Pose tensors copied from a motion / driver pickle when retargeting onto a subject identity.

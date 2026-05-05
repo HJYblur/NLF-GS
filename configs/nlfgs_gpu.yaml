@@ -126,12 +126,13 @@ inference:
 # --- Animation (anim.py) ---
 animation:
   pose: custom # reconstruction | tpose | custom (custom = pose from file + identity from subject smplx_param.pkl)
-  custom_pose_path: data/anim/bling1 # .pkl or .json (e.g. mesh-*_smplx.json under data/anim)
-  display_mode: video # image | video
   reconstruction_subdir: reconstruction
+  display_mode: video # image: only the first frame | video: the whole sequence frames + combined MP4
+  save_video_frame_pngs: true # frame_%06d.png in <mp4_stem>_frames/ alongside the mp4
+  custom_pose_path: data/anim/bling1 # file or folder; folder = all top-level *.json / *.pkl, sorted by digits in names
+  video_subdir: anim_video
   fps: 30
   duration_seconds: 2
-  video_subdir: anim_video
 
 # --- Offline metrics (evaluation scripts) ---
 metrics:
