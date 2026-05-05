@@ -215,11 +215,25 @@ def merge_subject_identity_with_driver_pose(subject: dict, driver: dict) -> dict
             out[key] = d.copy()
             continue
         s = numpy.asarray(out[key], dtype=numpy.float32)
+        # Allow common shape mismatches by reshaping driver to match subject when safe.
         if d.shape != s.shape:
-            raise ValueError(
-                f"Driver pose '{key}' has shape {d.shape}, subject has {s.shape}. "
-                "Use the same SMPL-X model settings (e.g. num_pca_comps) for both."
-            )
+            try:
+                # If total elements match, reshape driver to subject shape.
+                if d.size == s.size:
+                    d = d.reshape(s.shape)
+                # If driver is 1D like (3,) and subject is (1,3), reshape driver to (1,3).
+                elif d.ndim == 1 and s.ndim == 2 and s.shape[1] == d.shape[0]:
+                    d = d.reshape(1, -1)
+                # If driver is (1,3) and subject is (3,), reshape driver to subject shape.
+                elif d.ndim == 2 and s.ndim == 1 and d.shape[0] == 1 and d.shape[1] == s.shape[0]:
+                    d = d.reshape(s.shape)
+                else:
+                    raise ValueError(
+                        f"Driver pose '{key}' has shape {d.shape}, subject has {s.shape}. "
+                        "Use the same SMPL-X model settings (e.g. num_pca_comps) for both."
+                    )
+            except Exception:
+                raise
         out[key] = d.copy()
     return out
 
