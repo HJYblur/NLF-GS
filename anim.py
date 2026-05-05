@@ -34,6 +34,7 @@ from src.avatar_utils.smplx_loader import (
     merge_subject_identity_with_driver_pose,
     vertices_from_smplx_param_dict,
 )
+from src.avatar_utils.subject_utils import subjects_in_range
 from src.training.nlfgs_builder import (
     apply_matmul_precision_for_device,
     build_nlf_gaussian_model,
@@ -45,7 +46,6 @@ from inference import (
     _inference_pt_filename,
     _repo_root,
     _resolve_path,
-    _subjects_in_range,
 )
 
 PLY_SAVE_LOG_SCALES = True
@@ -281,7 +281,7 @@ def main():
     fps, duration_s = _animation_fps_duration(cfg)
     pkl_override = Path(args.pkl).resolve() if args.pkl else None
 
-    subjects = _subjects_in_range(cfg, args.start_subject, args.end_subject)
+    subjects = subjects_in_range(cfg, args.start_subject, args.end_subject)
     renderer = gsplat_renderer_if_cuda(device)
 
     model = build_nlf_gaussian_model(cfg, device)
