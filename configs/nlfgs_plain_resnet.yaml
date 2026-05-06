@@ -1,0 +1,141 @@
+# NLF-GS — plain ResNet50 ablation (single layer4 map + optional 1×1 proj). No FPN multi-scale stack.
+# Baseline multi-scale encoder stays in ``configs/nlfgs_gpu.yaml`` only; do not merge unless intentional.
+
+# --- Runtime / process ---
+sys:
+  device: cuda # 'cpu', 'cuda', 'cuda:0', etc.
+  matmul_precision: medium # 'high', 'medium', 'low'
+  debug: False
+
+# --- Dataset & resolution (single source of truth for image_size) ---
+data:
+  raw_obj_root: data/THuman_2.0
+  raw_smplx_root: data/THuman_2.0_smplx
+  processed_root: processed
+  train_subject_path: data/split_train.txt
+  val_subject_path: data/split_val.txt
+  num_views: 3
+  image_size: [1024,1024] # [W, H]
+
+# --- Canonical cameras (intrinsics/extrinsics-style; resolution lives under data) ---
+camera:
+  distance: 3.0 # Camera distance from origin
+  yfov_deg: 45.0 # Vertical field of view in degrees
+  up: [0.0, 1.0, 0.0] # Default up vector
+  # Orbit cameras are defined in code: 15° steps, 0° = front (+Z); filenames thuman_<deg>.json
+
+# --- Perception stack (ablation: plain ResNet — differs from nlfgs_gpu.yaml here only) ---
+backbone:
+  encoder: plain # resnet_plain / resnet50_plain also accepted
+  resnet50_weights_path: models/torchvision/resnet50-0676ba61.pth
+  local_feature_dim: 256 # match proj (256) or raw layer4 (2048 if proj disabled)
+  plain:
+    proj_channels: 256 # 0 or null → 2048-d layer4; then set local_feature_dim + decoder.in_dim to 2048
+    pretrained_fallback: true # false + no weight file → random init (e.g. smoke tests)
+
+fusion:
+  mode: learned # fixed: normalize geometric view_weights only; learned: MLP + softmax over views
+  hidden_dim: 256 # MLP width (defaults to decoder.hidden if omitted)
+
+avatar_template:
+  mode: default # default | generate | test | anim
+  path: models/avatar_template.ply
+  cano_mesh_path: models/smplx/smplx_uv.obj
+  anim_mesh_path: tmp/output_smplx_mesh.ply
+  k_num_gaussians: 4
+  barycentric_coords:
+    - [0.6, 0.2, 0.2]
+    - [0.2, 0.6, 0.2]
+    - [0.2, 0.2, 0.6]
+    - [0.3333333333, 0.3333333333, 0.3333333333]
+
+decoder:
+  in_dim: 256 # local feature dim (plain path); must match backbone.local_feature_dim
+  hidden: 256
+  sh_degree: 2
+  out_dim: 38
+  scale_min: 1.0e-6 # sigmoid lower bound for Gaussian scale
+  scale_max: 1.0e-2 # sigmoid upper bound for Gaussian scale
+  alpha_min: 0.0 # lower bound for opacity
+  alpha_max: 1.0 # upper bound for opacity
+  rot_min: -1.0 # pre-normalization lower bound for quaternion components
+  rot_max: 1.0 # pre-normalization upper bound for quaternion components
+  sh_min: -1.0 # lower bound for SH coefficients
+  sh_max: 1.0 # upper bound for SH coefficients
+  offset_scale: 0.01 # hard cap factor for local-surface offsets
+
+# --- Training loop (aligned with nlfgs_gpu.yaml) ---
+train:
+  resume: false
+  # Checkpoint
+  ckpt_path: /home/tim/Documents/LemonCode/avatar-benchmark/avatar-training/qot7fd4n/checkpoints/epoch=9-step=4250.ckpt
+  # Run
+  accelerator: cuda
+  precision: 16-mixed # Use AMP (fp16) to halve VRAM on activations & weights
+  num_workers: 2
+  epochs: 40
+  ablation_epochs: 20 # For ablation: number of epochs to train with full loss before switching off components
+  val_ratio: 0.1
+  train_decoder_only: false # true: freeze backbone and train decoder only; false: also train encoder trunk
+
+  # Optimizer
+  lr: 0.0001
+  wd: 0.01
+  betas: [0.9, 0.99]
+  eps: 1.0e-8
+  bb_lr_mult: 0.1 # backbone lr = lr * bb_lr_mult (try 0.01 if unstable)
+
+  # LR schedule
+  warmup_ratio: 0.05 # 5-10% warmup is recommended
+  min_lr_ratio: 0.05 # cosine floor; keep > 0 to avoid stalling
+  scheduler: cosine
+
+  # Loss weights
+  weight_l1: 0.5
+  weight_masked_ssim: 0.1
+  weight_perceptual: 0.1
+  weight_silhouette: 0.1
+  weight_scale_reg: 0.01
+  weight_offset_reg: 0.01
+  weight_opacity_nontransparent: 0.005
+  # Unused in final loss now (commented out in losses.py)
+  weight_opacity_reg: 0.0
+  weight_multiview_consistency: 0.0
+
+  # Monitoring / logging
+  profile_gpu: False # peak VRAM per section
+  test_renders: [7, 10, 12, 15, 100, 350] # WandB RGB: subject IDs, or [-1] for all
+
+# --- Rasterization & experiment logging ---
+render:
+  save_path: output # backward compatibility; renders logged online by default
+  view_chunk_size: 1
+  log_online: true
+  log_stages: ["train", "val"]
+
+# --- Inference (inference.py): checkpoint, outputs, optional reconstruction PNGs / PLY ---
+inference:
+  checkpoint: models/checkpoints/balmy-river.ckpt
+  smplx_source: subject_params # subject_params | canonical_mesh
+  output_dir: output
+  save_reconstruction: true
+  reconstruction_subdir: reconstruction
+  reconstruction_render_mode: full_orbit # full_orbit (24) | cardinal (4)
+  save_test_ply: false
+  log_fps: True # Log FPS of the inference process
+
+# --- Animation (anim.py) ---
+animation:
+  pose: custom # reconstruction | tpose | custom (custom = pose from file + identity from subject smplx_param.pkl)
+  reconstruction_subdir: reconstruction
+  display_mode: video # image: only the first frame | video: the whole sequence frames + combined MP4
+  save_video_frame_pngs: true # frame_%06d.png in <mp4_stem>_frames/ alongside the mp4
+  custom_pose_path: data/anim/bling1 # file or folder; folder = all top-level *.json / *.pkl, sorted by digits in names
+  video_subdir: anim_video
+  fps: 30
+  duration_seconds: 2
+
+# --- Offline metrics (evaluation scripts) ---
+metrics:
+  lpips_cache_dir: models/lpips
+  # test_views: [0, 30, 60, 90, 120, 150, 180, 210, 240, 270, 300, 330] # Degrees for orbit views; 0° = front (+Z)

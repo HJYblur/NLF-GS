@@ -25,11 +25,22 @@ class GaussianDecoder(nn.Module):
         if bb.get("local_feature_dim") is not None:
             default_in_dim = int(bb["local_feature_dim"])
         else:
-            levels = bb.get("fpn_levels") or ["p2", "p3", "p4"]
-            ch = int(bb.get("fpn_out_channels", 256))
-            default_in_dim = (
-                ch * len(levels) if isinstance(levels, (list, tuple)) and len(levels) > 0 else 768
-            )
+            encoder = str(bb.get("encoder", "fpn")).strip().lower()
+            if encoder in ("plain", "resnet_plain", "resnet50_plain"):
+                plain = bb.get("plain") if isinstance(bb.get("plain"), dict) else {}
+                pc = plain.get("proj_channels", bb.get("plain_proj_channels"))
+                if pc is False or (isinstance(pc, str) and pc.lower() in ("none", "null", "")):
+                    default_in_dim = 2048
+                elif pc is not None and int(pc) > 0:
+                    default_in_dim = int(pc)
+                else:
+                    default_in_dim = 256
+            else:
+                levels = bb.get("fpn_levels") or ["p2", "p3", "p4"]
+                ch = int(bb.get("fpn_out_channels", 256))
+                default_in_dim = (
+                    ch * len(levels) if isinstance(levels, (list, tuple)) and len(levels) > 0 else 768
+                )
 
         self.debug = debug
         self.in_dim = int(dec_cfg.get("in_dim", default_in_dim))

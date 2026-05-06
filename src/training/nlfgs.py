@@ -8,9 +8,10 @@ Gaussian decode, rasterization, and supervision.
 from typing import Any, Dict
 from contextlib import nullcontext
 import re
+
 import torch
+import torch.nn as nn
 import lightning as L
-from encoder.feature_extractor import FeatureExtractor
 from encoder.gaussian_estimator import AvatarGaussianEstimator
 from encoder.learned_view_fusion import LearnedViewFusion
 from encoder.avatar_template import AvatarTemplate
@@ -29,7 +30,7 @@ class NlfGaussianModel(L.LightningModule):
     # -------------------------------------------------------------------------
     def __init__(
         self,
-        backbone: FeatureExtractor,
+        backbone: nn.Module,
         decoder: GaussianDecoder,
         renderer: GsplatRenderer,
         train_decoder_only: bool = True,
@@ -50,11 +51,22 @@ class NlfGaussianModel(L.LightningModule):
         if bb.get("local_feature_dim") is not None:
             default_in_dim = int(bb["local_feature_dim"])
         else:
-            levels = bb.get("fpn_levels") or ["p2", "p3", "p4"]
-            ch = int(bb.get("fpn_out_channels", 256))
-            default_in_dim = (
-                ch * len(levels) if isinstance(levels, (list, tuple)) and len(levels) > 0 else 768
-            )
+            encoder = str(bb.get("encoder", "fpn")).strip().lower()
+            if encoder in ("plain", "resnet_plain", "resnet50_plain"):
+                plain = bb.get("plain") if isinstance(bb.get("plain"), dict) else {}
+                pc = plain.get("proj_channels", bb.get("plain_proj_channels"))
+                if pc is False or (isinstance(pc, str) and pc.lower() in ("none", "null", "")):
+                    default_in_dim = 2048
+                elif pc is not None and int(pc) > 0:
+                    default_in_dim = int(pc)
+                else:
+                    default_in_dim = 256
+            else:
+                levels = bb.get("fpn_levels") or ["p2", "p3", "p4"]
+                ch = int(bb.get("fpn_out_channels", 256))
+                default_in_dim = (
+                    ch * len(levels) if isinstance(levels, (list, tuple)) and len(levels) > 0 else 768
+                )
         feat_dim = int(dec_cfg.get("in_dim", default_in_dim))
         fusion_hidden = int(fusion_cfg.get("hidden_dim", dec_cfg.get("hidden", 256)))
         self.view_fusion = (
