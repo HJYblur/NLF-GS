@@ -210,11 +210,9 @@ __marimo__/
 # Ignore data files
 data/THuman**
 data/anim/*/*.obj
-processed/
-processed_512/
-processed_512_test/
-processed_test/
+processed**
 GHG**
+**dataset**
 
 
 # Ignore training files

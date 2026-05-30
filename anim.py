@@ -18,38 +18,69 @@ import os
 import sys
 from pathlib import Path
 
-import imageio
+try:
+    import imageio
+except Exception:
+    imageio = None
 import numpy
-import torch
+import time
+try:
+    import torch
+except Exception:
+    torch = None
 
 sys.path.append(str(Path(__file__).parent / "src"))
+try:
+    from src.avatar_utils.anim_replay import gaussian_params_for_render, replay_fused_gaussian_means
+    from src.avatar_utils.config import load_config
+    from src.avatar_utils.ply_loader import reconstruct_gaussian_avatar_as_ply
+    from src.avatar_utils.smplx_loader import (
+        copy_smplx_params_spin_global_yaw,
+        copy_smplx_params_tpose_rest,
+        frame_count_for_duration_seconds,
+        load_smplx_params_dict,
+        load_smplx_params_from_path,
+        merge_subject_identity_with_driver_pose,
+        smplx_motion_sequence_paths,
+        vertices_from_smplx_param_dict,
+    )
+    from src.avatar_utils.subject_utils import subjects_in_range
+    from src.training.nlfgs_builder import (
+        apply_matmul_precision_for_device,
+        build_nlf_gaussian_model,
+        device_from_cfg,
+        gsplat_renderer_if_cuda,
+    )
+except Exception:
+    # Defer import errors until runtime usage; allow --help to run without full deps.
+    gaussian_params_for_render = None
+    replay_fused_gaussian_means = None
+    load_config = None
+    reconstruct_gaussian_avatar_as_ply = None
+    copy_smplx_params_spin_global_yaw = None
+    copy_smplx_params_tpose_rest = None
+    frame_count_for_duration_seconds = None
+    load_smplx_params_dict = None
+    load_smplx_params_from_path = None
+    merge_subject_identity_with_driver_pose = None
+    smplx_motion_sequence_paths = None
+    vertices_from_smplx_param_dict = None
+    subjects_in_range = None
+    apply_matmul_precision_for_device = None
+    build_nlf_gaussian_model = None
+    device_from_cfg = None
+    gsplat_renderer_if_cuda = None
 
-from src.avatar_utils.anim_replay import gaussian_params_for_render, replay_fused_gaussian_means
-from src.avatar_utils.config import load_config
-from src.avatar_utils.ply_loader import reconstruct_gaussian_avatar_as_ply
-from src.avatar_utils.smplx_loader import (
-    copy_smplx_params_spin_global_yaw,
-    copy_smplx_params_tpose_rest,
-    frame_count_for_duration_seconds,
-    load_smplx_params_dict,
-    load_smplx_params_from_path,
-    merge_subject_identity_with_driver_pose,
-    smplx_motion_sequence_paths,
-    vertices_from_smplx_param_dict,
-)
-from src.avatar_utils.subject_utils import subjects_in_range
-from src.training.nlfgs_builder import (
-    apply_matmul_precision_for_device,
-    build_nlf_gaussian_model,
-    device_from_cfg,
-    gsplat_renderer_if_cuda,
-)
-
-from inference import (
-    _inference_pt_filename,
-    _repo_root,
-    _resolve_path,
-)
+try:
+    from inference import (
+        _inference_pt_filename,
+        _repo_root,
+        _resolve_path,
+    )
+except Exception:
+    _inference_pt_filename = None
+    _repo_root = None
+    _resolve_path = None
 
 PLY_SAVE_LOG_SCALES = True
 PLY_SAVE_INCLUDE_PARENT = True
@@ -179,6 +210,11 @@ def _video_frames_directory(video_path: Path) -> Path:
     return video_path.parent / f"{video_path.stem}_frames"
 
 
+def _sync_device(device: torch.device) -> None:
+    if device.type == "cuda":
+        torch.cuda.synchronize()
+
+
 def _render_spin_video(
     *,
     renderer,
@@ -190,17 +226,31 @@ def _render_spin_video(
     fps: float,
     video_path: Path,
     save_frame_pngs: bool = True,
+    profile_render: bool = False,
+    render_times: list | None = None,
 ) -> None:
     frames_rgb: list[numpy.ndarray] = []
     gp_cpu = {k: v.detach().cpu() if torch.is_tensor(v) else v for k, v in gaussian_params.items()}
     frames_dir = _video_frames_directory(video_path) if save_frame_pngs else None
     if frames_dir is not None:
         frames_dir.mkdir(parents=True, exist_ok=True)
+        if imageio is None:
+            raise ImportError(
+                "imageio is required to write frame PNGs; install with `pip install imageio`"
+            )
+        if imageio is None:
+            raise ImportError(
+                "imageio is required to write frame PNGs; install with `pip install imageio`"
+            )
 
     with torch.inference_mode():
         for i in range(num_frames):
             p_i = copy_smplx_params_spin_global_yaw(static_smplx_params, i, num_frames)
             verts_i = vertices_from_smplx_param_dict(p_i)
+            if profile_render:
+                _sync_device(device)
+                t0 = time.perf_counter()
+
             fused = replay_fused_gaussian_means(
                 estimator,
                 verts_i,
@@ -214,12 +264,20 @@ def _render_spin_video(
                 view_name="0",
                 save_folder_path=None,
             )
+
+            if profile_render:
+                _sync_device(device)
+                dt = time.perf_counter() - t0
+                if render_times is not None:
+                    render_times.append(dt)
             frame_u8 = (rgb[0].clamp(0, 1).detach().cpu().numpy() * 255.0).astype(numpy.uint8)
             frames_rgb.append(frame_u8)
             if frames_dir is not None:
                 imageio.imwrite(str(frames_dir / f"frame_{i:06d}.png"), frame_u8)
 
     video_path.parent.mkdir(parents=True, exist_ok=True)
+    if imageio is None:
+        raise ImportError("imageio is required to write video output; install with `pip install imageio`")
     imageio.mimsave(str(video_path), frames_rgb, fps=fps)
     print(f"Saved spin video ({num_frames} frames @ {fps} fps) → {video_path.resolve()}")
     if frames_dir is not None:
@@ -237,6 +295,8 @@ def _render_custom_sequence_video(
     fps: float,
     video_path: Path,
     save_frame_pngs: bool = True,
+    profile_render: bool = False,
+    render_times: list | None = None,
 ) -> None:
     """One video frame per motion file (directory sequence); identity from ``subject_smplx_params``."""
     frames_rgb: list[numpy.ndarray] = []
@@ -250,6 +310,10 @@ def _render_custom_sequence_video(
             driver = load_smplx_params_from_path(str(p))
             merged = merge_subject_identity_with_driver_pose(subject_smplx_params, driver)
             verts_i = vertices_from_smplx_param_dict(merged)
+            if profile_render:
+                _sync_device(device)
+                t0 = time.perf_counter()
+
             fused = replay_fused_gaussian_means(
                 estimator,
                 verts_i,
@@ -263,12 +327,20 @@ def _render_custom_sequence_video(
                 view_name="0",
                 save_folder_path=None,
             )
+
+            if profile_render:
+                _sync_device(device)
+                dt = time.perf_counter() - t0
+                if render_times is not None:
+                    render_times.append(dt)
             frame_u8 = (rgb[0].clamp(0, 1).detach().cpu().numpy() * 255.0).astype(numpy.uint8)
             frames_rgb.append(frame_u8)
             if frames_dir is not None:
                 imageio.imwrite(str(frames_dir / f"frame_{i:06d}.png"), frame_u8)
 
     video_path.parent.mkdir(parents=True, exist_ok=True)
+    if imageio is None:
+        raise ImportError("imageio is required to write video output; install with `pip install imageio`")
     imageio.mimsave(str(video_path), frames_rgb, fps=fps)
     print(
         f"Saved motion sequence video ({len(driver_paths)} frames @ {fps} fps) → {video_path.resolve()}"
@@ -333,6 +405,10 @@ def main():
     cfg = load_config(args.config)
     device = device_from_cfg(cfg)
     apply_matmul_precision_for_device(cfg, device)
+
+    inf_cfg = cfg.get("inference", {})
+    log_fps = bool(inf_cfg.get("log_fps", False))
+    render_times_s: list[float] = []
 
     pose, display_mode = _animation_pose_display_mode(cfg, args.pose, args.display_mode)
     fps, duration_s = _animation_fps_duration(cfg)
@@ -425,6 +501,8 @@ def main():
                     fps=fps,
                     video_path=vid_path,
                     save_frame_pngs=save_video_pngs,
+                    profile_render=log_fps,
+                    render_times=render_times_s,
                 )
             else:
                 n_frames = frame_count_for_duration_seconds(fps, duration_s)
@@ -438,6 +516,8 @@ def main():
                     fps=fps,
                     video_path=vid_path,
                     save_frame_pngs=save_video_pngs,
+                    profile_render=log_fps,
+                    render_times=render_times_s,
                 )
             continue
 
@@ -477,16 +557,45 @@ def main():
 
         assert renderer is not None
         views_dir = sub_dir / views_subdir
-        renderer.render_canonical_views(
-            fused,
-            gp_render,
-            views_dir,
-            save_prefix=args.save_prefix,
-        )
+        if log_fps:
+            _sync_device(device)
+            t0 = time.perf_counter()
+            out = renderer.render_canonical_views(
+                fused,
+                gp_render,
+                views_dir,
+                save_prefix=args.save_prefix,
+            )
+            _sync_device(device)
+            dt = time.perf_counter() - t0
+            # per-view time
+            n_views = out.shape[0] if hasattr(out, "shape") and out.shape[0] > 0 else 1
+            per_view = dt / float(n_views)
+            render_times_s.extend([per_view] * int(n_views))
+            print(
+                f"[{subject}] Rendered {args.save_prefix}_*.png (pose={pose}) → {views_dir.resolve()}"
+            )
+            print(f"[{subject}] render: {dt * 1000.0:.2f} ms total ({per_view * 1000.0:.2f} ms/view)")
+        else:
+            renderer.render_canonical_views(
+                fused,
+                gp_render,
+                views_dir,
+                save_prefix=args.save_prefix,
+            )
+            print(
+                f"[{subject}] Rendered {args.save_prefix}_*.png (pose={pose}) → {views_dir.resolve()}"
+            )
+
+    if log_fps and render_times_s:
+        mean_s = sum(render_times_s) / len(render_times_s)
         print(
-            f"[{subject}] Rendered {args.save_prefix}_*.png (pose={pose}) → {views_dir.resolve()}"
+            f"Animation render — mean over {len(render_times_s)} frame(s): "
+            f"{mean_s * 1000.0:.2f} ms/frame, {1.0 / mean_s:.2f} frames/s (avg)"
         )
 
 
 if __name__ == "__main__":
+    # Print summary render timings if requested
+    # (main collects per-frame times into `render_times_s` when `inference.log_fps` true)
     main()
