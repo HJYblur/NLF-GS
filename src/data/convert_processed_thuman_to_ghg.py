@@ -12,6 +12,7 @@ Expected source layout:
         ...
         smpl_param.pkl
         smplx_param.pkl
+        smplx.obj
 
 Expected camera layout:
     THuman_cameras/
@@ -28,31 +29,36 @@ Default GHG input mapping:
 Default output:
     Generalizable-Human-Gaussians/datasets/THuman/
     val/img/
-    ├── 0004_000/
+    ├── 0001_000/
     │   └── 0.jpg
-    ├── 0004_006/
+    ├── 0001_006/
     │   └── 0.jpg
-    └── 0004_011/
+    └── 0001_011/
         └── 0.jpg
 
     val/mask/
-    ├── 0004_000/
+    ├── 0001_000/
     │   └── 0.png
-    ├── 0004_006/
+    ├── 0001_006/
     │   └── 0.png
-    └── 0004_011/
+    └── 0001_011/
         └── 0.png
 
     val/parm/
-    ├── 0004_000/
+    ├── 0001_000/
     │   ├── 0_intrinsic.npy
     │   └── 0_extrinsic.npy
-    ├── 0004_006/
+    ├── 0001_006/
     │   ├── 0_intrinsic.npy
     │   └── 0_extrinsic.npy
-    └── 0004_011/
+    └── 0001_011/
         ├── 0_intrinsic.npy
         └── 0_extrinsic.npy
+
+    val/smplx_obj/
+    |── 0001.obj
+    ├── 0002.obj
+    ├── 0003.obj
 
 Notes:
 - This script only creates the data layout and camera .npy files.
@@ -274,8 +280,10 @@ def create_map_dirs(out_root: Path) -> None:
 
 def copy_smplx_objs(
     subjects: Iterable[str],
+    processed_root: Path,
     out_root: Path,
     smplx_obj_template: str | None,
+    smplx_obj_name: str,
     copy_mode: str,
     overwrite: bool,
 ) -> None:
@@ -289,16 +297,15 @@ def copy_smplx_objs(
         source: /home/tim/.../THuman_2.0_smplx/0000/mesh_smplx.obj
         output: datasets/THuman/val/smplx_obj/0000.obj
     """
-    if not smplx_obj_template:
-        print("[INFO] --smplx-obj-template not provided; skipping OBJ copy.")
-        return
-
     obj_out_dir = out_root / "smplx_obj"
     obj_out_dir.mkdir(parents=True, exist_ok=True)
 
     missing = []
     for subject in subjects:
-        src = Path(smplx_obj_template.format(subject=subject)).expanduser()
+        if smplx_obj_template:
+            src = Path(smplx_obj_template.format(subject=subject)).expanduser()
+        else:
+            src = processed_root / subject / smplx_obj_name
         dst = obj_out_dir / f"{subject}.obj"
         if not src.exists():
             missing.append(str(src))
@@ -423,9 +430,12 @@ def main() -> None:
     parser.add_argument("--smplx-obj-template", default=None,
                         help=(
                             "Optional Python format string for SMPL-X OBJ. "
-                            "For your layout: "
+                            "If omitted, script reads <processed-root>/<subject>/<smplx-obj-name>. "
+                            "Alternative template example: "
                             "'/home/tim/Documents/LemonCode/avatar-benchmark/data/THuman_2.0_smplx/{subject}/mesh_smplx.obj'"
                         ))
+    parser.add_argument("--smplx-obj-name", default="smplx.obj",
+                        help="SMPL-X OBJ filename under each processed subject (default: smplx.obj).")
     parser.add_argument("--create-map-dirs", action="store_true", help="Create empty GHG position/visibility map dirs.")
     parser.add_argument("--patch-ghg", action="store_true", help="Best-effort patch GHG loader/utils for sparse eval.")
     parser.add_argument("--run-position-map", action="store_true", help="Run GHG process_dataset/render_position_map.py after conversion.")
@@ -506,8 +516,10 @@ def main() -> None:
 
     copy_smplx_objs(
         subjects=subjects,
+        processed_root=processed_root,
         out_root=out_root,
         smplx_obj_template=args.smplx_obj_template,
+        smplx_obj_name=args.smplx_obj_name,
         copy_mode=args.copy_mode,
         overwrite=args.overwrite,
     )

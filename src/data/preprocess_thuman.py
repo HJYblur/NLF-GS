@@ -278,6 +278,58 @@ def _export_subject_smplx(
     print(f"Wrote normalized SMPL-X params: {out_path}")
 
 
+def _find_subject_smplx_obj(identity: str) -> Path | None:
+    """Find the source SMPL-X OBJ for an identity."""
+    subject_dir = SMPLX_SOURCE_ROOT / identity
+    if not subject_dir.exists():
+        return None
+
+    for candidate in ("mesh_smplx.obj", "smplx.obj", f"{identity}.obj"):
+        p = subject_dir / candidate
+        if p.exists():
+            return p
+
+    obj_files = sorted(
+        p
+        for p in subject_dir.glob("*.obj")
+        if not p.name.startswith(".") and not p.name.startswith("._")
+    )
+    if obj_files:
+        return obj_files[0]
+    return None
+
+
+def _export_subject_smplx_obj(
+    identity: str,
+    out_dir: Path,
+    scale: float,
+    translation: np.ndarray,
+) -> None:
+    """Apply mesh normalization transform to source SMPL-X OBJ and export it."""
+    src_obj = _find_subject_smplx_obj(identity)
+    if src_obj is None:
+        print(f"Skipping SMPL-X OBJ export for {identity}: missing source OBJ")
+        return
+
+    loaded = trimesh.load(src_obj, process=False)
+    if isinstance(loaded, trimesh.Scene):
+        meshes = [g for g in loaded.geometry.values() if isinstance(g, trimesh.Trimesh)]
+        if not meshes:
+            print(f"Skipping SMPL-X OBJ export for {identity}: no mesh geometry in {src_obj}")
+            return
+        mesh = trimesh.util.concatenate(meshes)
+    elif isinstance(loaded, trimesh.Trimesh):
+        mesh = loaded.copy()
+    else:
+        print(f"Skipping SMPL-X OBJ export for {identity}: unsupported mesh type in {src_obj}")
+        return
+
+    mesh.vertices = (mesh.vertices.astype(np.float64) * scale) + translation
+    out_obj = out_dir / "smplx.obj"
+    mesh.export(out_obj)
+    print(f"Wrote normalized SMPL-X mesh: {out_obj}")
+
+
 def _export_subject_smpl(
     identity: str,
     out_dir: Path,
@@ -515,6 +567,7 @@ def preprocess_thuman(
             continue
         meshes, scale, translation = _normalize_meshes_for_rendering(meshes)
         _export_subject_smplx(identity, target_dir, scale, translation)
+        _export_subject_smplx_obj(identity, target_dir, scale, translation)
         _export_subject_smpl(identity, target_dir, scale, translation)
         texture_path = _find_texture_for_obj(obj_path)
         _render_views(meshes, target_dir, texture_path, identity)
